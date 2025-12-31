@@ -7,6 +7,7 @@
 
 struct ScanOptions {
 	bool intra = false;
+	int max_dist = -1;
 	int block_size = 1024;
 	float min_abs_r = 0.2f;
 	int nsamples = 0;	// used for output column 'n'

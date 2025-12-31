@@ -18,10 +18,10 @@ cmake --build build -j
 # Test
 ```bash
 tests/test_smoke.sh
-./build/adfinder --vcf x.vcf.gz --out test --min-abs-r 0.5
+./build/adfinder --vcf tests/data/ancestry_blocks.vcf --out test --min-abs-r 0.5 --max-windows 200 --intra
 ```
 
 # Run in parall
 ```bash
-OMP_NUM_THREADS=4 ./build/adfinder --vcf ... --out ... --permute 20 --seed 1
+OMP_NUM_THREADS=4 ./build/adfinder --vcf tests/data/ancestry_blocks.vcf --out scan --max-windows 8000 --permute 20 --permute-sample 20000 --seed 123
 ```

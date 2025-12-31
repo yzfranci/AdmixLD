@@ -58,6 +58,11 @@ bool scan_blocks_write_hits(
 	int block_size = opt.block_size;
 	float min_abs_r = opt.min_abs_r;
 
+	std::cout << "[scan] intra=" << (opt.intra ? 1 : 0)
+		  << " max_dist=" << opt.max_dist
+		  << " block_size=" << opt.block_size
+		  << "\n";
+
 	of << "wA\tchrA\tstartA\twB\tchrB\tstartB\tr\tn\n";
 
 	tested_pairs = 0;
@@ -98,18 +103,49 @@ bool scan_blocks_write_hits(
 
 					for (int ia = 0; ia < b1; ++ia) {
 						int a = idx[i0 + ia];
-						int jb_start = (j0 == i0) ? (ia + 1) : 0;
+						int startA = starts[a];
 
-						for (int ib = jb_start; ib < b2; ++ib) {
+						int jb_start = 0;
+						if (j0 == i0)
+							jb_start = ia + 1;
+
+						int jb_end = b2;
+
+						// Distance filter (only for intra)
+						if (opt.max_dist >= 0) {
+							int limit = startA + opt.max_dist;
+
+							// We want the first position in idx where start > limit
+							// Search within the j-block [j0, j0+b2)
+							auto begin_it = idx.begin() + j0;
+							auto end_it = idx.begin() + j0 + b2;
+
+							auto ub = std::upper_bound(begin_it, end_it, limit,
+								[&](int value, int widx) {
+									return value < starts[widx];
+								}
+							);
+
+							jb_end = (int)std::distance(begin_it, ub);
+
+							// jb_end is relative to begin_it; convert to [0,b2]
+							// (distance already in that coordinate system)
+						}
+
+						if (jb_end <= jb_start)
+							continue;
+
+						for (int ib = jb_start; ib < jb_end; ++ib) {
 							int b = idx[j0 + ib];
 							float r = R(ia, ib);
 
 							++tested_pairs;
 
-							if (std::fabs(r) >= min_abs_r)
+							if (std::fabs(r) >= opt.min_abs_r)
 								emit_hit(a, b, r);
 						}
 					}
+
 				}
 			}
 		}

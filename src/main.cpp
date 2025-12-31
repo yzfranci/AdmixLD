@@ -22,6 +22,7 @@ static void usage() {
 		<< "Usage:\n"
 		<< "  adfinder --vcf input.vcf[.gz] --out output_prefix [--min-abs-r 0.2]\n"
 		<< "  --intra            Scan intrachromosomal pairs (default: interchrom only)\n"
+		<< "  --max-dist INT     Intra only: max start-distance (bp) between window pairs\n"
 		<< "  --max-windows N    Load at most N windows (default cap if <=0)\n"
 		<< "  --hi FILE          User provided hybrid index file (TSV: sample<TAB>hi)\n"
 		<< "  --block-size INT   Block size for processing (default: 1024)\n"
@@ -37,6 +38,7 @@ int main(int argc, char** argv) {
 
 	double min_abs_r = 0;
 	bool intra = false;
+	int max_dist = -1;
 	int max_windows = -1;	// <=0 means loader default cap
 	int block_size = ADFINDER_DEFAULT_BLOCK_SIZE;
 	int n_perm = 0;
@@ -62,6 +64,9 @@ int main(int argc, char** argv) {
 
 		} else if (a == "--intra") {
 			intra = true;
+
+		} else if (a == "--max-dist" && i + 1 < argc) {
+			max_dist = std::stoi(argv[++i]);	
 
 		} else if (a == "--max-windows" && i + 1 < argc) {
 			max_windows = std::stoi(argv[++i]);
@@ -119,6 +124,9 @@ int main(int argc, char** argv) {
 	int to_print = std::min(5, nsamples);
 	for (int i = 0; i < to_print; ++i)
 		std::cout << "  sample[" << i << "] = " << wm.sample_names[i] << "\n";
+	
+	std::cout << std::flush;
+
 
 	// ---- Group window indices by chromosome ----
 		std::vector<std::string> chr_order;
@@ -175,6 +183,8 @@ int main(int argc, char** argv) {
 	for (int i = 0; i < ph; ++i)
 		std::cout << "  " << wm.sample_names[i] << "\t" << h(i) << "\n";
 
+	std::cout << std::flush;
+
 	// ---- Residualize each window on HI and z-score => Z (nsamples × nwin) ----
 	int n_valid_windows = 0;
 	Eigen::MatrixXf Z;
@@ -207,6 +217,8 @@ int main(int argc, char** argv) {
 		std::cout << "  sanity r(Z_w0, Z_w1) skipped (invalid window or <2 windows)\n";
 	}
 
+	std::cout << std::flush;
+
 	// ---- Permutation test ----
 	if (n_perm > 0) {
 		if (intra) {
@@ -226,6 +238,8 @@ int main(int argc, char** argv) {
 		std::cout << "  n_perm         = " << n_perm << "\n";
 		std::cout << "  seed           = " << seed << "\n";
 		std::cout << "  perm_sample    = " << perm_sample << "\n";
+
+		std::cout << std::flush;
 
 		if (!permute_interchrom_summary_chrblock(Z, windows_by_chr, chr_order, popt, seed, n_perm, perm_sample, summ))
 			return 1;
@@ -260,6 +274,7 @@ int main(int argc, char** argv) {
 
 	ScanOptions opt;
 	opt.intra = intra;
+	opt.max_dist = max_dist;
 	opt.block_size = block_size;
 	opt.min_abs_r = (float)min_abs_r;
 	opt.nsamples = nsamples;
