@@ -8,6 +8,11 @@
 #include <chrono>
 #include <iomanip>
 
+#ifdef ADFINDER_HAS_OPENMP
+#include <omp.h>
+#endif
+
+
 std::unordered_map<std::string, std::vector<int>> group_by_chr(
 	const std::vector<std::string>& chroms,
 	std::vector<std::string>& chr_order
@@ -199,7 +204,7 @@ bool permute_interchrom_summary_chrblock(
 	int block_size = opt.block_size;
 
 	summaries_out.clear();
-	summaries_out.reserve((size_t)n_perm);
+	summaries_out.resize((size_t)n_perm);
 
 	Eigen::MatrixXf A(nsamples, block_size);
 	Eigen::MatrixXf B(nsamples, block_size);
@@ -216,21 +221,43 @@ bool permute_interchrom_summary_chrblock(
 	for (const auto& chr : chr_order)
 		perm_by_chr[chr] = std::vector<int>(nsamples);
 
-	auto t0 = std::chrono::steady_clock::now();
-	auto last = t0;
+	summaries_out.clear();
+	summaries_out.resize((size_t)n_perm);
 
-	int every = 1;
-	if (n_perm >= 1000) every = 10;
-	else if (n_perm >= 200) every = 5;
-	else if (n_perm >= 50) every = 2;
+	int nthreads = 1;
+	#ifdef ADFINDER_HAS_OPENMP
+	nthreads = omp_get_max_threads();
+	#endif
 
-	std::cout << "Permuting (interchrom chr-block): " << n_perm << " replicates\n";
+	std::cout << "Permutation test: " << n_perm << " replicates";
+	#ifdef ADFINDER_HAS_OPENMP
+	std::cout << " using " << nthreads << " threads";
+	#endif
+	std::cout << "\n";
+
+	#pragma omp parallel for schedule(dynamic)
 	for (int rep = 0; rep < n_perm; ++rep) {
+		// Thread-local RNG
 		std::mt19937_64 rng(seed + (uint64_t)rep);
 
+		// Thread-local buffers (avoid races)
+		Eigen::MatrixXf A(nsamples, block_size);
+		Eigen::MatrixXf B(nsamples, block_size);
+		Eigen::MatrixXf R(block_size, block_size);
+
+		// Base vector + perm maps (thread-local)
+		std::vector<int> base(nsamples);
+		for (int i = 0; i < nsamples; ++i)
+			base[i] = i;
+
+		std::unordered_map<std::string, std::vector<int>> perm_by_chr;
+		perm_by_chr.reserve(chr_order.size());
+		for (const auto& chr : chr_order)
+			perm_by_chr[chr] = base;
+
+		// Build one permutation per chromosome (for this rep)
 		for (const auto& chr : chr_order) {
 			auto& perm = perm_by_chr[chr];
-			perm = base;
 			std::shuffle(perm.begin(), perm.end(), rng);
 		}
 
@@ -238,10 +265,8 @@ bool permute_interchrom_summary_chrblock(
 		s.min_r = std::numeric_limits<float>::infinity();
 		s.max_r = -std::numeric_limits<float>::infinity();
 
-		// Reservoir sample of r values (signed)
 		std::vector<float> sample;
 		sample.reserve((size_t)sample_size);
-
 		long long seen = 0;
 
 		int C = (int)chr_order.size();
@@ -285,7 +310,6 @@ bool permute_interchrom_summary_chrblock(
 								if (r < s.min_r) s.min_r = r;
 								if (r > s.max_r) s.max_r = r;
 
-								// Reservoir sampling
 								++seen;
 								if ((int)sample.size() < sample_size) {
 									sample.push_back(r);
@@ -309,29 +333,7 @@ bool permute_interchrom_summary_chrblock(
 		s.p95 = quantile_from_sorted(sample, 0.95);
 		s.p99 = quantile_from_sorted(sample, 0.99);
 
-		summaries_out.push_back(s);
-
-	if ((rep + 1) % every == 0 || (rep + 1) == n_perm) {
-		auto now = std::chrono::steady_clock::now();
-		double elapsed = std::chrono::duration<double>(now - t0).count();
-		double since_last = std::chrono::duration<double>(now - last).count();
-
-		// Also print if it's been a while since last update
-		if (since_last >= 5.0 || (rep + 1) == n_perm) {
-			double rate = (elapsed > 0.0) ? (double)(rep + 1) / elapsed : 0.0;
-			double eta = (rate > 0.0) ? ((double)n_perm - (rep + 1)) / rate : 0.0;
-
-			std::cout << "  perm " << (rep + 1) << "/" << n_perm
-					<< "  elapsed=" << std::fixed << std::setprecision(1) << elapsed << "s"
-					<< "  rate=" << std::setprecision(2) << rate << "/s"
-					<< "  ETA=" << std::setprecision(1) << eta << "s"
-					<< "  max_r=" << std::setprecision(4) << s.max_r
-					<< "\n";
-
-			last = now;
-		}
-	}
-
+		summaries_out[(size_t)rep] = s;
 	}
 
 	return true;

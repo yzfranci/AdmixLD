@@ -20,3 +20,8 @@ cmake --build build -j
 tests/test_smoke.sh
 ./build/adfinder --vcf x.vcf.gz --out test --min-abs-r 0.5
 ```
+
+# Run in parall
+```bash
+OMP_NUM_THREADS=4 ./build/adfinder --vcf ... --out ... --permute 20 --seed 1
+```

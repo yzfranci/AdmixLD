@@ -8,11 +8,6 @@ if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(OpenMP)
-if(OpenMP_CXX_FOUND)
-	message(STATUS "OpenMP found")
-endif()
-
 # HTSlib via pkg-config
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(HTS REQUIRED htslib)
@@ -37,8 +32,9 @@ target_compile_options(adfinder PRIVATE ${HTS_CFLAGS_OTHER})
 # Eigen
 target_link_libraries(adfinder PRIVATE Eigen3::Eigen)
 
-# OpenMP
+find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
+	message(STATUS "OpenMP found")
 	target_link_libraries(adfinder PRIVATE OpenMP::OpenMP_CXX)
 	target_compile_definitions(adfinder PRIVATE ADFINDER_HAS_OPENMP=1)
 endif()
