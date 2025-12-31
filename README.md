@@ -10,8 +10,13 @@ eigen
 ```
 # Build locally
 ```bash
-	mkdir -p build
-	cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-	cmake --build build -j
-	./build/adfinder --vcf x.vcf.gz --out test --min-abs-r 0.2
+rm -rf build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+# Test
+```bash
+tests/test_smoke.sh
+./build/adfinder --vcf x.vcf.gz --out test --min-abs-r 0.5
 ```

@@ -1,4 +1,5 @@
 #include "vcf_windows.hpp"
+#include "../config.hpp"
 
 #include <htslib/hts.h>
 #include <htslib/vcf.h>
@@ -40,9 +41,10 @@ WindowMatrix load_windows_from_vcf(
 		throw std::runtime_error("VCF has neither DS nor GT FORMAT");
 	}
 
+	// ---- Apply hard cap on number of windows to load ----
 	int max_windows_load = opt.max_windows;
-	if (max_windows_load <= 0)
-		max_windows_load = 50000;
+	if (max_windows_load <= 0 || max_windows_load > ADFINDER_HARD_MAX_WINDOWS)
+		max_windows_load = ADFINDER_HARD_MAX_WINDOWS;
 
 	out.X = Eigen::MatrixXf(nsamples, max_windows_load);
 	const float NA = std::numeric_limits<float>::quiet_NaN();
@@ -109,6 +111,13 @@ WindowMatrix load_windows_from_vcf(
 		}
 
 		++nwin;
+	}
+
+	// If we hit the cap, warn that remaining records were not read
+	if (nwin == max_windows_load) {
+		std::cerr
+			<< "Warning: reached window cap (" << max_windows_load << "). "
+			<< "Remaining VCF records were not read.\n";
 	}
 
 	bcf_destroy(rec);

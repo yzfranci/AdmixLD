@@ -14,8 +14,7 @@
 #include "core/hybrid_index.hpp"
 #include "core/residualize.hpp"
 #include "core/scan_blocks.hpp"
-
-
+#include "config.hpp"
 
 static void usage() {
 	std::cerr
@@ -25,7 +24,10 @@ static void usage() {
 		<< "  --intra            Scan intrachromosomal pairs (default: interchrom only)\n"
 		<< "  --max-windows N    Load at most N windows (default cap if <=0)\n"
 		<< "  --hi FILE          User provided hybrid index file (TSV: sample<TAB>hi)\n"
-		<< "  --block-size INT   Block size for processing (default: 1024)\n";
+		<< "  --block-size INT   Block size for processing (default: 1024)\n"
+		<< "  --permute N            Run N interchrom chr-block permutations (summary stats)\n"
+		<< "  --permute-sample INT   Reservoir sample size for percentile estimates (default: 200000)\n"
+		<< "  --seed INT             RNG seed for permutations (default: 1)\n";
 }
 
 int main(int argc, char** argv) {
@@ -33,10 +35,14 @@ int main(int argc, char** argv) {
 	std::string out;
 	std::string hi_path;
 
-	double min_abs_r = 0.2;
+	double min_abs_r = 0;
 	bool intra = false;
 	int max_windows = -1;	// <=0 means loader default cap
-	int block_size = 1024;
+	int block_size = ADFINDER_DEFAULT_BLOCK_SIZE;
+	int n_perm = 0;
+	int perm_sample = 200000;
+	uint64_t seed = 1;
+
 
 	for (int i = 1; i < argc; ++i) {
 		std::string a = argv[i];
@@ -65,6 +71,15 @@ int main(int argc, char** argv) {
 
 		} else if (a == "--block-size" && i + 1 < argc) {
 			block_size = std::stoi(argv[++i]);
+
+		} else if (a == "--permute" && i + 1 < argc) {
+			n_perm = std::stoi(argv[++i]);
+
+		} else if (a == "--permute-sample" && i + 1 < argc) {
+			perm_sample = std::stoi(argv[++i]);
+
+		} else if (a == "--seed" && i + 1 < argc) {
+			seed = (uint64_t)std::stoull(argv[++i]);
 
 		} else {
 			std::cerr << "Unknown/invalid arg: " << a << "\n";
@@ -191,6 +206,54 @@ int main(int argc, char** argv) {
 	} else {
 		std::cout << "  sanity r(Z_w0, Z_w1) skipped (invalid window or <2 windows)\n";
 	}
+
+	// ---- Permutation test ----
+	if (n_perm > 0) {
+		if (intra) {
+			std::cerr << "Error: --permute is currently implemented for interchrom scans only (omit --intra).\n";
+			return 1;
+		}
+
+		ScanOptions popt;
+		popt.intra = false;
+		popt.block_size = block_size;
+		popt.min_abs_r = (float)min_abs_r;
+		popt.nsamples = nsamples;
+
+		std::vector<PermSummary> summ;
+
+		std::cout << "Permutation test (interchrom, chr-block):\n";
+		std::cout << "  n_perm         = " << n_perm << "\n";
+		std::cout << "  seed           = " << seed << "\n";
+		std::cout << "  perm_sample    = " << perm_sample << "\n";
+
+		if (!permute_interchrom_summary_chrblock(Z, windows_by_chr, chr_order, popt, seed, n_perm, perm_sample, summ))
+			return 1;
+
+		std::string perm_path = out + ".perm.summary.tsv";
+		std::ofstream pf(perm_path);
+		if (!pf) {
+			std::cerr << "Error: cannot write to " << perm_path << "\n";
+			return 1;
+		}
+
+		pf << "rep\tmax_r\tp99\tp95\tmedian\tp05\tp01\tmin_r\n";
+		for (int r = 0; r < (int)summ.size(); ++r) {
+			pf << r
+				<< "\t" << summ[r].max_r
+				<< "\t" << summ[r].p99
+				<< "\t" << summ[r].p95
+				<< "\t" << summ[r].median
+				<< "\t" << summ[r].p05
+				<< "\t" << summ[r].p01
+				<< "\t" << summ[r].min_r
+				<< "\n";
+		}
+		pf.close();
+
+		std::cout << "  wrote permutation summaries: " << perm_path << "\n";
+	}
+
 
 	// ---- Scan pairs using BLOCK matrix multiply ----
 	std::string out_path = out + ".hits.tsv";
