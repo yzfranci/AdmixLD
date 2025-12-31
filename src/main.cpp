@@ -285,7 +285,7 @@ int main(int argc, char** argv) {
 	std::cout << "Scan mode: " << (intra ? "intrachromosomal" : "interchromosomal") << "\n";
 	std::cout << "Block size: " << block_size << "\n";
 
-	if (!scan_blocks_write_hits(Z, chroms, starts, windows_by_chr, chr_order, opt, out_path, tested, kept))
+	if (!scan_blocks_write_hits(Z, chroms, ends, windows_by_chr, chr_order, opt, out_path, tested, kept))
 		return 1;
 
 	std::cout << "Scan complete:\n";

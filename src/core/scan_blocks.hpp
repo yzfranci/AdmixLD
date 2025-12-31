@@ -21,7 +21,7 @@ std::unordered_map<std::string, std::vector<int>> group_by_chr(
 bool scan_blocks_write_hits(
 	const Eigen::MatrixXf& Z,
 	const std::vector<std::string>& chroms,
-	const std::vector<int>& starts,
+	const std::vector<int>& ends,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,
 	const ScanOptions& opt,

@@ -40,7 +40,7 @@ std::unordered_map<std::string, std::vector<int>> group_by_chr(
 bool scan_blocks_write_hits(
 	const Eigen::MatrixXf& Z,
 	const std::vector<std::string>& chroms,
-	const std::vector<int>& starts,
+	const std::vector<int>& ends,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,
 	const ScanOptions& opt,
@@ -63,7 +63,7 @@ bool scan_blocks_write_hits(
 		  << " block_size=" << opt.block_size
 		  << "\n";
 
-	of << "wA\tchrA\tstartA\twB\tchrB\tstartB\tr\tn\n";
+	of << "wA\tchrA\tendA\twB\tchrB\tendB\tr\tn\n";
 
 	tested_pairs = 0;
 	kept_pairs = 0;
@@ -75,11 +75,12 @@ bool scan_blocks_write_hits(
 	Eigen::MatrixXf R(block_size, block_size);
 
 	auto emit_hit = [&](int a, int b, float r) {
-		of << a << "\t" << chroms[a] << "\t" << starts[a] << "\t"
-		   << b << "\t" << chroms[b] << "\t" << starts[b] << "\t"
-		   << r << "\t" << nsamples << "\n";
+		of << a << "\t" << chroms[a] << "\t" << ends[a] << "\t"
+		<< b << "\t" << chroms[b] << "\t" << ends[b] << "\t"
+		<< r << "\t" << nsamples << "\n";
 		++kept_pairs;
 	};
+
 
 	if (opt.intra) {
 		for (const auto& chr : chr_order) {
@@ -103,7 +104,7 @@ bool scan_blocks_write_hits(
 
 					for (int ia = 0; ia < b1; ++ia) {
 						int a = idx[i0 + ia];
-						int startA = starts[a];
+						int endA = ends[a];
 
 						int jb_start = 0;
 						if (j0 == i0)
@@ -113,7 +114,7 @@ bool scan_blocks_write_hits(
 
 						// Distance filter (only for intra)
 						if (opt.max_dist >= 0) {
-							int limit = startA + opt.max_dist;
+							int limit = endA + opt.max_dist;
 
 							// We want the first position in idx where start > limit
 							// Search within the j-block [j0, j0+b2)
@@ -122,7 +123,7 @@ bool scan_blocks_write_hits(
 
 							auto ub = std::upper_bound(begin_it, end_it, limit,
 								[&](int value, int widx) {
-									return value < starts[widx];
+									return value < ends[widx];
 								}
 							);
 
