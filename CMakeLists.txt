@@ -22,6 +22,10 @@ find_package(Eigen3 REQUIRED)
 
 add_executable(adfinder
 	src/main.cpp
+	src/io/vcf_windows.cpp
+	src/core/hybrid_index.cpp
+	src/core/residualize.cpp
+	src/core/scan_blocks.cpp
 )
 
 # HTSlib
