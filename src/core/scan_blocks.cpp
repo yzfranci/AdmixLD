@@ -292,6 +292,161 @@ bool scan_blocks_write_hits(
 	return true;
 }
 
+bool scan_target_write_hits(
+	const Eigen::MatrixXf& Z,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
+	const ScanOptions& opt,
+	int target_w,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
+) {
+	std::ofstream of(out_path);
+	if (!of) {
+		std::cerr << "Error: cannot write to " << out_path << "\n";
+		return false;
+	}
+
+	bool do_distrib = (!distrib_path.empty());
+	if (distrib_sample <= 0)
+		distrib_sample = 200000;
+
+	int nsamples = opt.nsamples;
+	int block_size = opt.block_size;
+	float min_abs_r = opt.min_abs_r;
+	const float denom = 1.0f / (float)(nsamples - 1);
+
+	ScanSummary ds;
+	ds.tested_pairs = 0;
+	ds.min_r = std::numeric_limits<float>::infinity();
+	ds.max_r = -std::numeric_limits<float>::infinity();
+
+	std::mt19937_64 drng(distrib_seed);
+	std::vector<float> dsample;
+	if (do_distrib)
+		dsample.reserve((size_t)distrib_sample);
+
+	auto consider_distrib = [&](float r) {
+		if (!do_distrib)
+			return;
+
+		if (r < ds.min_r) ds.min_r = r;
+		if (r > ds.max_r) ds.max_r = r;
+
+		++ds.tested_pairs;
+
+		if ((int)dsample.size() < distrib_sample) {
+			dsample.push_back(r);
+		} else {
+			std::uniform_int_distribution<long long> U(0, ds.tested_pairs - 1);
+			long long j = U(drng);
+			if (j < distrib_sample)
+				dsample[(size_t)j] = r;
+		}
+	};
+
+	of << "wA\tchrA\tposA\twB\tchrB\tposB\tr\tn\n";
+
+	tested_pairs = 0;
+	kept_pairs = 0;
+
+	Eigen::VectorXf v = Z.col(target_w);				// nsamples
+	Eigen::MatrixXf B(nsamples, block_size);			// nsamples x b2
+	Eigen::RowVectorXf R(block_size);					// 1 x b2
+
+	const std::string& tchr = chroms[target_w];
+	int tpos = pos[target_w];
+
+	for (const auto& chr : chr_order) {
+		const auto& idx = windows_by_chr.at(chr);
+		int m = (int)idx.size();
+
+		// If not intra, skip target chromosome entirely
+		if (!opt.intra && chr == tchr)
+			continue;
+
+		for (int j0 = 0; j0 < m; j0 += block_size) {
+			int b2 = std::min(block_size, m - j0);
+
+			for (int k = 0; k < b2; ++k)
+				B.col(k) = Z.col(idx[j0 + k]);
+
+			R.head(b2).noalias() = v.transpose() * B.leftCols(b2);
+			R.head(b2) *= denom;
+
+			for (int ib = 0; ib < b2; ++ib) {
+				int b = idx[j0 + ib];
+
+				if (b == target_w)
+					continue;
+
+				// If intra + max_dist, enforce distance on same chr only
+				if (opt.intra && opt.max_dist >= 0 && chroms[b] == tchr) {
+					int d = pos[b] - tpos;
+					if (d < 0) d = -d;
+					if (d > opt.max_dist)
+						continue;
+				}
+
+				float r = R(ib);
+				++tested_pairs;
+				consider_distrib(r);
+
+				if (std::fabs(r) >= min_abs_r) {
+					of << target_w << "\t" << chroms[target_w] << "\t" << pos[target_w] << "\t"
+						<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
+						<< r << "\t" << nsamples << "\n";
+					++kept_pairs;
+				}
+			}
+		}
+	}
+
+	// Write distrib summary if requested
+	if (do_distrib) {
+		std::ofstream df(distrib_path);
+		if (!df) {
+			std::cerr << "Error: cannot write to " << distrib_path << "\n";
+			return false;
+		}
+
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+
+		if (ds.tested_pairs == 0 || dsample.empty()) {
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+		} else {
+			std::sort(dsample.begin(), dsample.end());
+			ds.p01 = quantile_from_sorted(dsample, 0.01);
+			ds.p05 = quantile_from_sorted(dsample, 0.05);
+			ds.p25 = quantile_from_sorted(dsample, 0.25);
+			ds.median = quantile_from_sorted(dsample, 0.50);
+			ds.p75 = quantile_from_sorted(dsample, 0.75);
+			ds.p95 = quantile_from_sorted(dsample, 0.95);
+			ds.p99 = quantile_from_sorted(dsample, 0.99);
+
+			df << ds.tested_pairs
+				<< "\t" << ds.max_r
+				<< "\t" << ds.p99
+				<< "\t" << ds.p95
+				<< "\t" << ds.p75
+				<< "\t" << ds.median
+				<< "\t" << ds.p25
+				<< "\t" << ds.p05
+				<< "\t" << ds.p01
+				<< "\t" << ds.min_r
+				<< "\n";
+		}
+	}
+
+	return true;
+}
+
 bool permute_interchrom_summary_chrblock(
 	const Eigen::MatrixXf& Z,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,

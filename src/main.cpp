@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <cstdint>
 #include <vector>
 #include <fstream>
 #include <sstream>
@@ -12,10 +13,12 @@
 #include <unordered_map>
 
 #include "io/vcf_windows.hpp"
+#include "io/bed.hpp"
 #include "core/hybrid_index.hpp"
 #include "core/residualize.hpp"
 #include "core/scan_blocks.hpp"
 #include "config.hpp"
+
 
 static void usage() {
 	std::cerr
@@ -31,7 +34,12 @@ static void usage() {
 		<< "  --distrib-sample INT   Reservoir sample size for distrib summary (default: 200000)\n"
 		<< "  --permute N            Run N interchrom chr-block permutations (summary stats)\n"
 		<< "  --permute-sample INT   Reservoir sample size for percentile estimates (default: 200000)\n"
-		<< "  --seed INT             RNG seed for permutations (default: 1)\n";
+		<< "  --seed INT             RNG seed for permutations (default: 1)\n"
+		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
+		<< "  --bed FILE             Keep windows whose pos is within BED intervals (chr start end; no header)\n"
+		<< "  --target-chr STR        Scan one target window/pos vs all others (target chrom)\n"
+		<< "  --target-pos INT        Target position (matches single pos column)\n";
+
 
 
 }
@@ -40,6 +48,9 @@ int main(int argc, char** argv) {
 	std::string vcf_path;
 	std::string out;
 	std::string hi_path;
+	std::vector<std::string> keep_chrs;
+	std::string bed_path;
+	std::string target_chr;
 
 	double min_abs_r = 0;
 	bool intra = false;
@@ -51,6 +62,8 @@ int main(int argc, char** argv) {
 	uint64_t seed = 1;
 	bool distrib = false;
 	int distrib_sample = 200000;
+	bool has_target = false;
+	int target_pos = -1;
 
 
 	for (int i = 1; i < argc; ++i) {
@@ -99,6 +112,20 @@ int main(int argc, char** argv) {
 		} else if (a == "--distrib-sample" && i + 1 < argc) {
 			distrib_sample = std::stoi(argv[++i]);
 		
+		} else if (a == "--chr" && i + 1 < argc) {
+			keep_chrs.push_back(argv[++i]);
+
+		} else if (a == "--bed" && i + 1 < argc) {
+			bed_path = argv[++i];
+
+		} else if (a == "--target-chr" && i + 1 < argc) {
+			has_target = true;
+			target_chr = argv[++i];
+
+		} else if (a == "--target-pos" && i + 1 < argc) {
+			has_target = true;
+			target_pos = std::stoi(argv[++i]);
+
 		} else {
 			std::cerr << "Unknown/invalid arg: " << a << "\n";
 			usage();
@@ -119,18 +146,87 @@ int main(int argc, char** argv) {
 	WindowMatrix wm = load_windows_from_vcf(vcf_path, vopt);
 
 	const int nsamples = (int)wm.sample_names.size();
-	const int nwin = (int)wm.X.cols();
 
 	Eigen::MatrixXf X = wm.X;
 
-	const std::vector<std::string>& chroms = wm.meta.chrom;
-	const std::vector<int>& starts = wm.meta.start;
-	const std::vector<int>& ends = wm.meta.end;
+	std::vector<std::string> chroms = wm.meta.chrom;
+	std::vector<int> starts = wm.meta.start;
+	std::vector<int> ends = wm.meta.end;
+	int nwin = (int)chroms.size();
+
+	// ---- Optional filters (chr / bed) applied BEFORE residualization ----
+	std::unordered_map<std::string, bool> chr_keep_map;
+	if (!keep_chrs.empty()) {
+		chr_keep_map.reserve(keep_chrs.size() * 2 + 1);
+		for (const auto& c : keep_chrs)
+			chr_keep_map[c] = true;
+	}
+
+	std::unordered_map<std::string, std::vector<BedInterval>> bed_by_chr;
+	bool use_bed = false;
+	if (!bed_path.empty()) {
+		use_bed = true;
+		if (!read_bed(bed_path, bed_by_chr))
+			return 1;
+		std::cout << "Using BED filter: " << bed_path << "\n";
+	}
+
+	std::vector<int> keep_idx;
+	keep_idx.reserve((size_t)nwin);
+
+	for (int w = 0; w < nwin; ++w) {
+		const std::string& chr = chroms[w];
+		int pos = ends[w];
+
+		if (!keep_chrs.empty()) {
+			if (chr_keep_map.find(chr) == chr_keep_map.end())
+				continue;
+		}
+
+		if (use_bed) {
+			if (!bed_contains(bed_by_chr, chr, pos))
+				continue;
+		}
+
+		keep_idx.push_back(w);
+	}
+
+	if (keep_idx.empty()) {
+		std::cerr << "Error: no windows remain after filtering.\n";
+		return 1;
+	}
+
+	if ((int)keep_idx.size() != nwin) {
+		std::cout << "Filtering windows:\n";
+		std::cout << "  before = " << nwin << "\n";
+		std::cout << "  after  = " << (int)keep_idx.size() << "\n";
+
+		int nwin2 = (int)keep_idx.size();
+
+		Eigen::MatrixXf Xf(nsamples, nwin2);
+		std::vector<std::string> chroms_f((size_t)nwin2);
+		std::vector<int> starts_f((size_t)nwin2);
+		std::vector<int> ends_f((size_t)nwin2);
+
+		for (int j = 0; j < nwin2; ++j) {
+			int w = keep_idx[j];
+			Xf.col(j) = X.col(w);
+			chroms_f[j] = chroms[w];
+			starts_f[j] = starts[w];
+			ends_f[j] = ends[w];
+		}
+
+		X.swap(Xf);
+		chroms.swap(chroms_f);
+		starts.swap(starts_f);
+		ends.swap(ends_f);
+		nwin = nwin2;
+	}
+
 
 	std::cout << "adfinder VCF OK\n";
 	std::cout << "  vcf        = " << vcf_path << "\n";
 	std::cout << "  out        = " << out << "\n";
-	std::cout << "  min_abs_r  = " << min_abs_r << "\n";
 	std::cout << "  nsamples   = " << nsamples << "\n";
 	std::cout << "  windows    = " << nwin << "\n";
 
@@ -205,6 +301,32 @@ int main(int argc, char** argv) {
 		std::cout << "  " << wm.sample_names[i] << "\t" << h(i) << "\n";
 
 	std::cout << std::flush;
+
+	// ---- Resolve target window index ----
+	int target_w = -1;
+	if (has_target) {
+		if (target_chr.empty() || target_pos < 0) {
+			std::cerr << "Error: --target-chr and --target-pos must both be provided.\n";
+			return 1;
+		}
+
+		for (int w = 0; w < nwin; ++w) {
+			if (chroms[w] == target_chr && ends[w] == target_pos) {
+				target_w = w;
+				break;
+			}
+		}
+
+		if (target_w < 0) {
+			std::cerr << "Error: target window not found after filtering: "
+				<< target_chr << ":" << target_pos << "\n";
+			return 1;
+		}
+
+		std::cout << "Target window: w=" << target_w
+			<< " chr=" << target_chr
+			<< " pos=" << target_pos << "\n";
+	}
 
 	// ---- Residualize each window on HI and z-score => Z (nsamples × nwin) ----
 	int n_valid_windows = 0;
@@ -317,12 +439,21 @@ int main(int argc, char** argv) {
 	if (distrib)
 		distrib_path = out + ".scan.summary.tsv";
 
-	if (!scan_blocks_write_hits(
-		Z, chroms, ends, windows_by_chr, chr_order,
-		opt, out_path, tested, kept,
-		distrib_path, distrib_sample, seed
-	))
-		return 1;
+	if (target_w >= 0) {
+		if (!scan_target_write_hits(
+			Z, chroms, ends, windows_by_chr, chr_order,
+			opt, target_w, out_path, tested, kept,
+			distrib_path, distrib_sample, seed
+		))
+			return 1;
+	} else {
+		if (!scan_blocks_write_hits(
+			Z, chroms, ends, windows_by_chr, chr_order,
+			opt, out_path, tested, kept,
+			distrib_path, distrib_sample, seed
+		))
+			return 1;
+	}
 
 	std::cout << "Scan complete:\n";
 	std::cout << "  tested_pairs = " << tested << "\n";

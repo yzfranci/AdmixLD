@@ -69,3 +69,19 @@ bool permute_interchrom_summary_chrblock(
 	int sample_size,
 	std::vector<PermSummary>& summaries_out
 );
+
+bool scan_target_write_hits(
+	const Eigen::MatrixXf& Z,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
+	const ScanOptions& opt,
+	int target_w,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path = "",
+	int distrib_sample = 200000,
+	uint64_t distrib_seed = 1
+);
