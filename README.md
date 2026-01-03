@@ -23,5 +23,12 @@ tests/test_smoke.sh
 
 # Run in parall
 ```bash
-OMP_NUM_THREADS=4 ./build/adfinder --vcf tests/data/ancestry_blocks.vcf --out scan --max-windows 8000 --permute 20 --permute-sample 20000 --seed 123
+# interchrom permutation test
+OMP_NUM_THREADS=4 ./build/adfinder --vcf tests/data/ancestry_blocks.vcf --out scan --max-windows 8000 --permute 1 --permute-sample 200000 --seed 123
+```
+
+# Other tests
+```bash
+# Empirical distribution test
+./build/adfinder --vcf tests/data/ancestry_blocks.vcf --out distr --max-windows 8000 --distrib --seed 123 --min-abs-r 0.5
 ```

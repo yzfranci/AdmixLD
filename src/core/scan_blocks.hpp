@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <cstdint>
 
 struct ScanOptions {
 	bool intra = false;
@@ -18,23 +19,41 @@ std::unordered_map<std::string, std::vector<int>> group_by_chr(
 	std::vector<std::string>& chr_order
 );
 
+struct ScanSummary {
+	long long tested_pairs = 0;
+	float min_r = 0.0f;
+	float p01 = 0.0f;
+	float p05 = 0.0f;
+	float p25 = 0.0f;
+	float median = 0.0f;
+	float p75 = 0.0f;
+	float p95 = 0.0f;
+	float p99 = 0.0f;
+	float max_r = 0.0f;
+};
+
 bool scan_blocks_write_hits(
 	const Eigen::MatrixXf& Z,
 	const std::vector<std::string>& chroms,
-	const std::vector<int>& ends,
+	const std::vector<int>& pos,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,
 	const ScanOptions& opt,
 	const std::string& out_path,
 	long long& tested_pairs,
-	long long& kept_pairs
+	long long& kept_pairs,
+	const std::string& distrib_path = "",
+	int distrib_sample = 200000,
+	uint64_t distrib_seed = 1
 );
 
 struct PermSummary {
 	float min_r = 0.0f;
 	float p01 = 0.0f;
 	float p05 = 0.0f;
+	float p25 = 0.0f;
 	float median = 0.0f;
+	float p75 = 0.0f;
 	float p95 = 0.0f;
 	float p99 = 0.0f;
 	float max_r = 0.0f;

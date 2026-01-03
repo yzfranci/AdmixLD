@@ -8,6 +8,7 @@
 #include <vector>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <unordered_map>
 
 #include "io/vcf_windows.hpp"
@@ -22,13 +23,17 @@ static void usage() {
 		<< "Usage:\n"
 		<< "  adfinder --vcf input.vcf[.gz] --out output_prefix [--min-abs-r 0.2]\n"
 		<< "  --intra            Scan intrachromosomal pairs (default: interchrom only)\n"
-		<< "  --max-dist INT     Intra only: max start-distance (bp) between window pairs\n"
+		<< "  --max-dist INT     Intra only: max end-distance (bp) between window pairs\n"
 		<< "  --max-windows N    Load at most N windows (default cap if <=0)\n"
 		<< "  --hi FILE          User provided hybrid index file (TSV: sample<TAB>hi)\n"
 		<< "  --block-size INT   Block size for processing (default: 1024)\n"
+		<< "  --distrib              Write empirical scan r distribution summary\n"
+		<< "  --distrib-sample INT   Reservoir sample size for distrib summary (default: 200000)\n"
 		<< "  --permute N            Run N interchrom chr-block permutations (summary stats)\n"
 		<< "  --permute-sample INT   Reservoir sample size for percentile estimates (default: 200000)\n"
 		<< "  --seed INT             RNG seed for permutations (default: 1)\n";
+
+
 }
 
 int main(int argc, char** argv) {
@@ -44,6 +49,8 @@ int main(int argc, char** argv) {
 	int n_perm = 0;
 	int perm_sample = 200000;
 	uint64_t seed = 1;
+	bool distrib = false;
+	int distrib_sample = 200000;
 
 
 	for (int i = 1; i < argc; ++i) {
@@ -86,6 +93,12 @@ int main(int argc, char** argv) {
 		} else if (a == "--seed" && i + 1 < argc) {
 			seed = (uint64_t)std::stoull(argv[++i]);
 
+		} else if (a == "--distrib") {
+			distrib = true;
+
+		} else if (a == "--distrib-sample" && i + 1 < argc) {
+			distrib_sample = std::stoi(argv[++i]);
+		
 		} else {
 			std::cerr << "Unknown/invalid arg: " << a << "\n";
 			usage();
@@ -132,6 +145,14 @@ int main(int argc, char** argv) {
 		std::vector<std::string> chr_order;
 		auto windows_by_chr = group_by_chr(chroms, chr_order);
 		std::cout << "Chromosomes in loaded windows: " << chr_order.size() << "\n";
+
+		// Ensure within-chromosome ordering by position (required for --max-dist upper_bound)
+		for (auto& kv : windows_by_chr) {
+			auto& idx = kv.second;
+			std::sort(idx.begin(), idx.end(),
+				[&](int a, int b) { return ends[a] < ends[b]; }
+			);
+		}
 
 	// ---- Compute / load hybrid index ----
 	Eigen::VectorXf h;
@@ -251,13 +272,16 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 
-		pf << "rep\tmax_r\tp99\tp95\tmedian\tp05\tp01\tmin_r\n";
+		pf << "rep\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+
 		for (int r = 0; r < (int)summ.size(); ++r) {
 			pf << r
 				<< "\t" << summ[r].max_r
 				<< "\t" << summ[r].p99
 				<< "\t" << summ[r].p95
+				<< "\t" << summ[r].p75
 				<< "\t" << summ[r].median
+				<< "\t" << summ[r].p25
 				<< "\t" << summ[r].p05
 				<< "\t" << summ[r].p01
 				<< "\t" << summ[r].min_r
@@ -266,6 +290,10 @@ int main(int argc, char** argv) {
 		pf.close();
 
 		std::cout << "  wrote permutation summaries: " << perm_path << "\n";
+
+		// If permutations were requested, stop here (do not run hits scan)
+		std::cout << "Permutation-only mode (--permute was set). Skipping hits scan.\n";
+		return 0;
 	}
 
 
@@ -285,13 +313,23 @@ int main(int argc, char** argv) {
 	std::cout << "Scan mode: " << (intra ? "intrachromosomal" : "interchromosomal") << "\n";
 	std::cout << "Block size: " << block_size << "\n";
 
-	if (!scan_blocks_write_hits(Z, chroms, ends, windows_by_chr, chr_order, opt, out_path, tested, kept))
+	std::string distrib_path;
+	if (distrib)
+		distrib_path = out + ".scan.summary.tsv";
+
+	if (!scan_blocks_write_hits(
+		Z, chroms, ends, windows_by_chr, chr_order,
+		opt, out_path, tested, kept,
+		distrib_path, distrib_sample, seed
+	))
 		return 1;
 
 	std::cout << "Scan complete:\n";
 	std::cout << "  tested_pairs = " << tested << "\n";
 	std::cout << "  kept_pairs   = " << kept << " (|r| >= " << min_abs_r << ")\n";
 	std::cout << "  wrote        = " << out_path << "\n";
+	if (distrib)
+		std::cout << "  wrote        = " << distrib_path << "\n";
 
 	return 0;
 }

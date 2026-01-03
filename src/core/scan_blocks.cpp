@@ -37,16 +37,36 @@ std::unordered_map<std::string, std::vector<int>> group_by_chr(
 	return windows_by_chr;
 }
 
+static float quantile_from_sorted(
+	const std::vector<float>& v,
+	double p
+) {
+	if (v.empty())
+		return std::numeric_limits<float>::quiet_NaN();
+
+	double x = p * (v.size() - 1);
+	size_t i0 = (size_t)std::floor(x);
+	size_t i1 = (size_t)std::ceil(x);
+	if (i0 == i1)
+		return v[i0];
+
+	double t = x - (double)i0;
+	return (float)((1.0 - t) * v[i0] + t * v[i1]);
+}
+
 bool scan_blocks_write_hits(
 	const Eigen::MatrixXf& Z,
 	const std::vector<std::string>& chroms,
-	const std::vector<int>& ends,
+	const std::vector<int>& pos,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,
 	const ScanOptions& opt,
 	const std::string& out_path,
 	long long& tested_pairs,
-	long long& kept_pairs
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
 ) {
 	std::ofstream of(out_path);
 	if (!of) {
@@ -63,10 +83,44 @@ bool scan_blocks_write_hits(
 		  << " block_size=" << opt.block_size
 		  << "\n";
 
-	of << "wA\tchrA\tendA\twB\tchrB\tendB\tr\tn\n";
+	of << "wA\tchrA\tposA\twB\tchrB\tposB\tr\tn\n";
 
 	tested_pairs = 0;
 	kept_pairs = 0;
+
+	bool do_distrib = (!distrib_path.empty());
+	if (distrib_sample <= 0)
+		distrib_sample = 200000;
+
+	ScanSummary ds;
+	ds.tested_pairs = 0;
+	ds.min_r = std::numeric_limits<float>::infinity();
+	ds.max_r = -std::numeric_limits<float>::infinity();
+
+	std::mt19937_64 drng(distrib_seed);
+	std::vector<float> dsample;
+	if (do_distrib) {
+		dsample.reserve((size_t)distrib_sample);
+	}
+
+	auto consider_distrib = [&](float r) {
+		if (!do_distrib)
+			return;
+
+		if (r < ds.min_r) ds.min_r = r;
+		if (r > ds.max_r) ds.max_r = r;
+
+		++ds.tested_pairs;
+
+		if ((int)dsample.size() < distrib_sample) {
+			dsample.push_back(r);
+		} else {
+			std::uniform_int_distribution<long long> U(0, ds.tested_pairs - 1);
+			long long j = U(drng);
+			if (j < distrib_sample)
+				dsample[(size_t)j] = r;
+		}
+	};
 
 	const float denom = 1.0f / (float)(nsamples - 1);
 
@@ -75,8 +129,8 @@ bool scan_blocks_write_hits(
 	Eigen::MatrixXf R(block_size, block_size);
 
 	auto emit_hit = [&](int a, int b, float r) {
-		of << a << "\t" << chroms[a] << "\t" << ends[a] << "\t"
-		<< b << "\t" << chroms[b] << "\t" << ends[b] << "\t"
+		of << a << "\t" << chroms[a] << "\t" << pos[a] << "\t"
+		<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
 		<< r << "\t" << nsamples << "\n";
 		++kept_pairs;
 	};
@@ -104,7 +158,7 @@ bool scan_blocks_write_hits(
 
 					for (int ia = 0; ia < b1; ++ia) {
 						int a = idx[i0 + ia];
-						int endA = ends[a];
+						int posA = pos[a];
 
 						int jb_start = 0;
 						if (j0 == i0)
@@ -114,16 +168,16 @@ bool scan_blocks_write_hits(
 
 						// Distance filter (only for intra)
 						if (opt.max_dist >= 0) {
-							int limit = endA + opt.max_dist;
+							int limit = posA + opt.max_dist;
 
-							// We want the first position in idx where start > limit
-							// Search within the j-block [j0, j0+b2)
+							// idx is assumed sorted by pos[] within chromosome.
+							// Search within the j-block [j0, j0+b2) for first pos > limit.
 							auto begin_it = idx.begin() + j0;
 							auto end_it = idx.begin() + j0 + b2;
 
 							auto ub = std::upper_bound(begin_it, end_it, limit,
 								[&](int value, int widx) {
-									return value < ends[widx];
+									return value < pos[widx];
 								}
 							);
 
@@ -141,6 +195,8 @@ bool scan_blocks_write_hits(
 							float r = R(ia, ib);
 
 							++tested_pairs;
+
+							consider_distrib(r);
 
 							if (std::fabs(r) >= opt.min_abs_r)
 								emit_hit(a, b, r);
@@ -186,6 +242,8 @@ bool scan_blocks_write_hits(
 
 								++tested_pairs;
 
+								consider_distrib(r);
+
 								if (std::fabs(r) >= min_abs_r)
 									emit_hit(a, b, r);
 							}
@@ -196,24 +254,42 @@ bool scan_blocks_write_hits(
 		}
 	}
 
+	if (do_distrib) {
+		std::ofstream df(distrib_path);
+		if (!df) {
+			std::cerr << "Error: cannot write to " << distrib_path << "\n";
+			return false;
+		}
+
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+
+		if (ds.tested_pairs == 0 || dsample.empty()) {
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+		} else {
+			std::sort(dsample.begin(), dsample.end());
+			ds.p01 = quantile_from_sorted(dsample, 0.01);
+			ds.p05 = quantile_from_sorted(dsample, 0.05);
+			ds.p25 = quantile_from_sorted(dsample, 0.25);
+			ds.median = quantile_from_sorted(dsample, 0.50);
+			ds.p75 = quantile_from_sorted(dsample, 0.75);
+			ds.p95 = quantile_from_sorted(dsample, 0.95);
+			ds.p99 = quantile_from_sorted(dsample, 0.99);
+
+			df << ds.tested_pairs
+				<< "\t" << ds.max_r
+				<< "\t" << ds.p99
+				<< "\t" << ds.p95
+				<< "\t" << ds.p75
+				<< "\t" << ds.median
+				<< "\t" << ds.p25
+				<< "\t" << ds.p05
+				<< "\t" << ds.p01
+				<< "\t" << ds.min_r
+				<< "\n";
+		}
+	}
+
 	return true;
-}
-
-static float quantile_from_sorted(
-	const std::vector<float>& v,
-	double p
-) {
-	if (v.empty())
-		return std::numeric_limits<float>::quiet_NaN();
-
-	double x = p * (v.size() - 1);
-	size_t i0 = (size_t)std::floor(x);
-	size_t i1 = (size_t)std::ceil(x);
-	if (i0 == i1)
-		return v[i0];
-
-	double t = x - (double)i0;
-	return (float)((1.0 - t) * v[i0] + t * v[i1]);
 }
 
 bool permute_interchrom_summary_chrblock(
@@ -366,7 +442,9 @@ bool permute_interchrom_summary_chrblock(
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);
 		s.p05 = quantile_from_sorted(sample, 0.05);
+		s.p25 = quantile_from_sorted(sample, 0.25);
 		s.median = quantile_from_sorted(sample, 0.50);
+		s.p75 = quantile_from_sorted(sample, 0.75);
 		s.p95 = quantile_from_sorted(sample, 0.95);
 		s.p99 = quantile_from_sorted(sample, 0.99);
 
