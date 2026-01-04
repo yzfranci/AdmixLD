@@ -198,8 +198,21 @@ bool scan_blocks_write_hits(
 
 							consider_distrib(r);
 
-							if (std::fabs(r) >= opt.min_abs_r)
+							bool keep = false;
+
+							if (opt.use_asym) {
+								if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
+									keep = true;
+								if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
+									keep = true;
+							} else {
+								if (std::fabs(r) >= opt.min_abs_r)
+									keep = true;
+							}
+
+							if (keep)
 								emit_hit(a, b, r);
+
 						}
 					}
 
@@ -244,7 +257,19 @@ bool scan_blocks_write_hits(
 
 								consider_distrib(r);
 
-								if (std::fabs(r) >= min_abs_r)
+								bool keep = false;
+
+								if (opt.use_asym) {
+									if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
+										keep = true;
+									if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
+										keep = true;
+								} else {
+									if (std::fabs(r) >= opt.min_abs_r)
+										keep = true;
+								}
+
+								if (keep)
 									emit_hit(a, b, r);
 							}
 						}
@@ -398,7 +423,19 @@ bool scan_target_write_hits(
 				++tested_pairs;
 				consider_distrib(r);
 
-				if (std::fabs(r) >= min_abs_r) {
+				bool keep = false;
+
+				if (opt.use_asym) {
+					if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
+						keep = true;
+					if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
+						keep = true;
+				} else {
+					if (std::fabs(r) >= opt.min_abs_r)
+						keep = true;
+				}
+
+				if (keep) {
 					of << target_w << "\t" << chroms[target_w] << "\t" << pos[target_w] << "\t"
 						<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
 						<< r << "\t" << nsamples << "\n";

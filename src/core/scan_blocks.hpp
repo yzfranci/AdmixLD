@@ -10,8 +10,16 @@ struct ScanOptions {
 	bool intra = false;
 	int max_dist = -1;
 	int block_size = 1024;
-	float min_abs_r = 0.2f;
-	int nsamples = 0;	// used for output column 'n'
+
+	// legacy symmetric filter
+	float min_abs_r = 0.0f;
+
+	// asymmetric filters
+	bool use_asym = false;
+	float min_neg_r = 0.0f;	// threshold magnitude, applied as r <= -min_neg_r
+	float min_pos_r = 0.0f;	// threshold applied as r >= min_pos_r
+
+	int nsamples = 0;
 };
 
 std::unordered_map<std::string, std::vector<int>> group_by_chr(

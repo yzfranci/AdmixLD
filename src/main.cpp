@@ -19,12 +19,14 @@
 #include "core/scan_blocks.hpp"
 #include "config.hpp"
 
-
 static void usage() {
 	std::cerr
 		<< "adfinder (load windows into matrix)\n"
 		<< "Usage:\n"
-		<< "  adfinder --vcf input.vcf[.gz] --out output_prefix [--min-abs-r 0.2]\n"
+		<< "  adfinder --vcf input.vcf[.gz] --out output_prefix\n"
+		<< "  --min-abs-r FLOAT      Keep pairs with |r| >= value (default)\n"
+		<< "  --min-neg-r FLOAT      Keep pairs with r <= -value (asymmetric)\n"
+		<< "  --min-pos-r FLOAT      Keep pairs with r >= value (asymmetric)\n"
 		<< "  --intra            Scan intrachromosomal pairs (default: interchrom only)\n"
 		<< "  --max-dist INT     Intra only: max end-distance (bp) between window pairs\n"
 		<< "  --max-windows N    Load at most N windows (default cap if <=0)\n"
@@ -37,11 +39,8 @@ static void usage() {
 		<< "  --seed INT             RNG seed for permutations (default: 1)\n"
 		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
 		<< "  --bed FILE             Keep windows whose pos is within BED intervals (chr start end; no header)\n"
-		<< "  --target-chr STR        Scan one target window/pos vs all others (target chrom)\n"
-		<< "  --target-pos INT        Target position (matches single pos column)\n";
-
-
-
+		<< "  --target-chr STR        Scan one target window/pos vs all others (target chromosome)\n"
+		<< "  --target-pos INT        Scan one target window/pos vs all others (target position; matches single pos column)\n";
 }
 
 int main(int argc, char** argv) {
@@ -64,6 +63,10 @@ int main(int argc, char** argv) {
 	int distrib_sample = 200000;
 	bool has_target = false;
 	int target_pos = -1;
+	bool has_min_neg_r = false;
+	bool has_min_pos_r = false;
+	float min_neg_r = 0.0f;
+	float min_pos_r = 0.0f;
 
 
 	for (int i = 1; i < argc; ++i) {
@@ -126,6 +129,14 @@ int main(int argc, char** argv) {
 			has_target = true;
 			target_pos = std::stoi(argv[++i]);
 
+		} else if (a == "--min-neg-r" && i + 1 < argc) {
+			min_neg_r = std::stof(argv[++i]);
+			has_min_neg_r = true;
+
+		} else if (a == "--min-pos-r" && i + 1 < argc) {
+			min_pos_r = std::stof(argv[++i]);
+			has_min_pos_r = true;
+
 		} else {
 			std::cerr << "Unknown/invalid arg: " << a << "\n";
 			usage();
@@ -139,7 +150,25 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 
-	// ---- NEW: load windows via module ----
+	// ---- Set asymetric threshold if min_neg_r and/or min_pos_r are set ----
+	bool use_asym = false;
+
+	if (has_min_neg_r || has_min_pos_r) {
+		use_asym = true;
+
+		if (!has_min_neg_r)
+			min_neg_r = 0.0f;
+		if (!has_min_pos_r)
+			min_pos_r = 0.0f;
+
+		if (min_neg_r < 0.0f || min_pos_r < 0.0f) {
+			std::cerr << "Error: --min-neg-r and --min-pos-r must be >= 0\n";
+			return 2;
+		}
+	}
+
+
+	// ---- load windows via module ----
 	VcfLoadOptions vopt;
 	vopt.max_windows = max_windows;
 
@@ -370,10 +399,14 @@ int main(int argc, char** argv) {
 		}
 
 		ScanOptions popt;
-		popt.intra = false;
+		popt.intra = intra;
+		popt.max_dist = max_dist;
 		popt.block_size = block_size;
-		popt.min_abs_r = (float)min_abs_r;
 		popt.nsamples = nsamples;
+		popt.min_abs_r = (float)min_abs_r;
+		popt.use_asym = false;
+		popt.min_neg_r = 0.0f;
+		popt.min_pos_r = 0.0f;
 
 		std::vector<PermSummary> summ;
 
@@ -426,8 +459,12 @@ int main(int argc, char** argv) {
 	opt.intra = intra;
 	opt.max_dist = max_dist;
 	opt.block_size = block_size;
-	opt.min_abs_r = (float)min_abs_r;
 	opt.nsamples = nsamples;
+	opt.min_abs_r = (float)min_abs_r;
+	opt.use_asym = use_asym;
+	opt.min_neg_r = min_neg_r;
+	opt.min_pos_r = min_pos_r;
+
 
 	long long tested = 0;
 	long long kept = 0;
@@ -461,6 +498,16 @@ int main(int argc, char** argv) {
 	std::cout << "  wrote        = " << out_path << "\n";
 	if (distrib)
 		std::cout << "  wrote        = " << distrib_path << "\n";
+	if (use_asym) {
+		std::cout << "  r filter    = ";
+		if (has_min_neg_r)
+			std::cout << "r <= -" << min_neg_r << " ";
+		if (has_min_pos_r)
+			std::cout << "r >= " << min_pos_r;
+		std::cout << "\n";
+	} else {
+		std::cout << "  |r| filter  = " << min_abs_r << "\n";
+	}
 
 	return 0;
 }
