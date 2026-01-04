@@ -31,6 +31,7 @@ static void usage() {
 		<< "  --max-dist INT     Intra only: max end-distance (bp) between window pairs\n"
 		<< "  --max-windows N    Load at most N windows (default cap if <=0)\n"
 		<< "  --hi FILE          User provided hybrid index file (TSV: sample<TAB>hi)\n"
+		<< "  --full-hi           Compute hybrid index using the full VCF (ignore --chr/--bed)\n"
 		<< "  --block-size INT   Block size for processing (default: 1024)\n"
 		<< "  --distrib              Write empirical scan r distribution summary\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distrib summary (default: 200000)\n"
@@ -51,6 +52,7 @@ int main(int argc, char** argv) {
 	std::string bed_path;
 	std::string target_chr;
 
+	bool full_hi = false;
 	double min_abs_r = 0;
 	bool intra = false;
 	int max_dist = -1;
@@ -96,6 +98,9 @@ int main(int argc, char** argv) {
 
 		} else if (a == "--hi" && i + 1 < argc) {
 			hi_path = argv[++i];
+
+		} else if (a == "--full-hi") {
+			full_hi = true;
 
 		} else if (a == "--block-size" && i + 1 < argc) {
 			block_size = std::stoi(argv[++i]);
@@ -177,6 +182,7 @@ int main(int argc, char** argv) {
 	const int nsamples = (int)wm.sample_names.size();
 
 	Eigen::MatrixXf X = wm.X;
+	Eigen::MatrixXf X_full = X;
 
 	std::vector<std::string> chroms = wm.meta.chrom;
 	std::vector<int> starts = wm.meta.start;
@@ -267,29 +273,37 @@ int main(int argc, char** argv) {
 
 
 	// ---- Group window indices by chromosome ----
-		std::vector<std::string> chr_order;
-		auto windows_by_chr = group_by_chr(chroms, chr_order);
-		std::cout << "Chromosomes in loaded windows: " << chr_order.size() << "\n";
+	std::vector<std::string> chr_order;
+	auto windows_by_chr = group_by_chr(chroms, chr_order);
+	std::cout << "Chromosomes in loaded windows: " << chr_order.size() << "\n";
 
-		// Ensure within-chromosome ordering by position (required for --max-dist upper_bound)
-		for (auto& kv : windows_by_chr) {
-			auto& idx = kv.second;
-			std::sort(idx.begin(), idx.end(),
-				[&](int a, int b) { return ends[a] < ends[b]; }
-			);
-		}
+	// Ensure within-chromosome ordering by position (required for --max-dist upper_bound)
+	for (auto& kv : windows_by_chr) {
+		auto& idx = kv.second;
+		std::sort(idx.begin(), idx.end(),
+			[&](int a, int b) { return ends[a] < ends[b]; }
+		);
+	}
 
 	// ---- Compute / load hybrid index ----
 	Eigen::VectorXf h;
+
+	if (full_hi && !hi_path.empty()) {
+		std::cerr << "Warning: --full-hi ignored because --hi FILE was provided\n";
+	}
 
 	if (!hi_path.empty()) {
 		std::cout << "Using HI from file: " << hi_path << "\n";
 		if (!load_hi_tsv(hi_path, wm.sample_names, h))
 			return 1;
+	} else if (full_hi) {
+		std::cout << "Computing HI from FULL VCF (pre-filter)\n";
+		h = compute_hi_from_X(X_full);
 	} else {
-		std::cout << "Computing HI from X\n";
+		std::cout << "Computing HI from FILTERED windows (if filters such as --chr or --bed are used)\n";
 		h = compute_hi_from_X(X);
 	}
+
 
 	// Always write the HI we used (computed or loaded)
 	std::string hi_out_path = out + ".hi.tsv";
