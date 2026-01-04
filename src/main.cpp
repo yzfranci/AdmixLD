@@ -14,6 +14,7 @@
 
 #include "io/vcf_windows.hpp"
 #include "io/bed.hpp"
+#include "io/sample_vector.hpp"
 #include "core/hybrid_index.hpp"
 #include "core/residualize.hpp"
 #include "core/scan_blocks.hpp"
@@ -41,7 +42,8 @@ static void usage() {
 		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
 		<< "  --bed FILE             Keep windows whose pos is within BED intervals (chr start end; no header)\n"
 		<< "  --target-chr STR        Scan one target window/pos vs all others (target chromosome)\n"
-		<< "  --target-pos INT        Scan one target window/pos vs all others (target position; matches single pos column)\n";
+		<< "  --target-pos INT        Scan one target window/pos vs all others (target position; matches single pos column)\n"
+		<< "  --sample-geno FILE     Per-sample numeric mito haplotype/genotype/trait TSV (works well for any per-sample trait not spatially structured): sample<TAB>value\n";
 }
 
 int main(int argc, char** argv) {
@@ -51,6 +53,7 @@ int main(int argc, char** argv) {
 	std::vector<std::string> keep_chrs;
 	std::string bed_path;
 	std::string target_chr;
+	std::string sample_geno_path;
 
 	bool full_hi = false;
 	double min_abs_r = 0;
@@ -134,6 +137,9 @@ int main(int argc, char** argv) {
 			has_target = true;
 			target_pos = std::stoi(argv[++i]);
 
+		} else if (a == "--sample-geno" && i + 1 < argc) {
+			sample_geno_path = argv[++i];
+
 		} else if (a == "--min-neg-r" && i + 1 < argc) {
 			min_neg_r = std::stof(argv[++i]);
 			has_min_neg_r = true;
@@ -172,6 +178,14 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	// ---- Check sample geno mode ----
+	bool sample_geno_mode = !sample_geno_path.empty();
+		if (sample_geno_mode && intra) {
+		std::cout << "Note: --intra ignored in --sample-geno mode\n";
+	}
+	if (sample_geno_mode && has_target) {
+		std::cout << "Note: --target-* ignored in --sample-geno mode\n";
+	}
 
 	// ---- load windows via module ----
 	VcfLoadOptions vopt;
@@ -371,6 +385,29 @@ int main(int argc, char** argv) {
 			<< " pos=" << target_pos << "\n";
 	}
 
+	// ---- Sample-geno residualization (override normal residualization) ----
+	Eigen::VectorXf gZ;
+	int g_valid = 0;
+
+	if (sample_geno_mode) {
+		Eigen::VectorXf g;
+
+		if (!load_sample_vector_tsv(sample_geno_path, wm.sample_names, g))
+			return 1;
+
+		try {
+			gZ = residualize_and_zscore_vector(g, h, g_valid);
+		} catch (const std::exception& e) {
+			std::cerr << "Error: sample-geno residualization failed: "
+				<< e.what() << "\n";
+			return 1;
+		}
+
+		std::cout << "Sample-geno residualization complete:\n";
+		std::cout << "  valid_samples = " << g_valid << " / " << nsamples << "\n";
+	}
+
+
 	// ---- Residualize each window on HI and z-score => Z (nsamples × nwin) ----
 	int n_valid_windows = 0;
 	Eigen::MatrixXf Z;
@@ -405,6 +442,55 @@ int main(int argc, char** argv) {
 
 	std::cout << std::flush;
 
+	// ---- scan options for permutation test ----
+
+	ScanOptions popt;
+	popt.intra = intra;
+	popt.max_dist = max_dist;
+	popt.block_size = block_size;
+	popt.nsamples = nsamples;
+	popt.min_abs_r = (float)min_abs_r;
+	popt.use_asym = false;
+	popt.min_neg_r = 0.0f;
+	popt.min_pos_r = 0.0f;
+
+	// ---- Sample-geno permutation test ----
+	if (sample_geno_mode && n_perm > 0) {
+		std::vector<PermSummary> summ;
+
+		std::cout << "Permutation test (sample-geno vs windows):\n";
+		std::cout << "  n_perm      = " << n_perm << "\n";
+		std::cout << "  seed        = " << seed << "\n";
+		std::cout << "  sample_size = " << perm_sample << "\n";
+
+		if (!permute_sample_vector_summary(
+			Z, gZ, popt, seed, n_perm, perm_sample, summ
+		))
+			return 1;
+
+		std::string perm_path = out + ".samplegeno.perm.summary.tsv";
+		std::ofstream pf(perm_path);
+
+		pf << "rep\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+		for (int r = 0; r < (int)summ.size(); ++r) {
+			pf << r
+				<< "\t" << summ[r].max_r
+				<< "\t" << summ[r].p99
+				<< "\t" << summ[r].p95
+				<< "\t" << summ[r].p75
+				<< "\t" << summ[r].median
+				<< "\t" << summ[r].p25
+				<< "\t" << summ[r].p05
+				<< "\t" << summ[r].p01
+				<< "\t" << summ[r].min_r
+				<< "\n";
+		}
+
+		std::cout << "  wrote permutation summaries: " << perm_path << "\n";
+		return 0;
+	}
+
+
 	// ---- Permutation test ----
 	if (n_perm > 0) {
 		if (intra) {
@@ -412,15 +498,7 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 
-		ScanOptions popt;
-		popt.intra = intra;
-		popt.max_dist = max_dist;
-		popt.block_size = block_size;
-		popt.nsamples = nsamples;
-		popt.min_abs_r = (float)min_abs_r;
-		popt.use_asym = false;
-		popt.min_neg_r = 0.0f;
-		popt.min_pos_r = 0.0f;
+
 
 		std::vector<PermSummary> summ;
 
@@ -465,8 +543,7 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 
-
-	// ---- Scan pairs using BLOCK matrix multiply ----
+	// ---- Set scan option ----
 	std::string out_path = out + ".hits.tsv";
 
 	ScanOptions opt;
@@ -479,6 +556,44 @@ int main(int argc, char** argv) {
 	opt.min_neg_r = min_neg_r;
 	opt.min_pos_r = min_pos_r;
 
+	// ---- Sample-geno scan overrides window scan ----
+	if (sample_geno_mode) {
+		std::string out_path = out + ".samplegeno.hits.tsv";
+		std::string distrib_path;
+		if (distrib)
+			distrib_path = out + ".samplegeno.scan.summary.tsv";
+
+		long long tested = 0;
+		long long kept = 0;
+
+		std::cout << "Scan mode: sample-geno vs all windows\n";
+
+		if (!scan_vector_vs_windows_write_hits(
+			Z, gZ,
+			chroms, ends,
+			windows_by_chr, chr_order,
+			opt,
+			out_path,
+			tested,
+			kept,
+			distrib_path,
+			distrib_sample,
+			seed
+		))
+			return 1;
+
+		std::cout << "Sample-geno scan complete:\n";
+		std::cout << "  tested_pairs = " << tested << "\n";
+		std::cout << "  kept_pairs   = " << kept << "\n";
+		std::cout << "  wrote        = " << out_path << "\n";
+		if (distrib)
+			std::cout << "  wrote        = " << distrib_path << "\n";
+
+		return 0;  // <<< Override normal scan
+	}
+
+
+	// ---- Scan pairs using BLOCK matrix multiply ----
 
 	long long tested = 0;
 	long long kept = 0;

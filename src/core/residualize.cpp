@@ -3,6 +3,8 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
+#include <limits>
 
 Eigen::MatrixXf residualize_and_zscore(
 	const Eigen::MatrixXf& X,
@@ -114,4 +116,82 @@ Eigen::MatrixXf residualize_and_zscore(
 	}
 
 	return Z;
+}
+
+
+Eigen::VectorXf residualize_and_zscore_vector(
+	const Eigen::VectorXf& y,
+	const Eigen::VectorXf& h,
+	int& n_valid
+) {
+	int n = (int)y.size();
+	if (h.size() != n)
+		throw std::runtime_error("residualize_and_zscore_vector: y and h size mismatch");
+
+	// Fit y = a + b*h using valid pairs
+	double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+	n_valid = 0;
+
+	for (int i = 0; i < n; ++i) {
+		float yi = y(i);
+		float hi = h(i);
+		if (std::isnan(yi) || std::isnan(hi))
+			continue;
+		sx += hi;
+		sy += yi;
+		sxx += (double)hi * (double)hi;
+		sxy += (double)hi * (double)yi;
+		++n_valid;
+	}
+
+	if (n_valid < 3)
+		throw std::runtime_error("residualize_and_zscore_vector: too few valid samples");
+
+	double denom = (double)n_valid * sxx - sx * sx;
+	if (denom == 0.0)
+		throw std::runtime_error("residualize_and_zscore_vector: singular fit");
+
+	double b = ((double)n_valid * sxy - sx * sy) / denom;
+	double a = (sy - b * sx) / (double)n_valid;
+
+	Eigen::VectorXf r(n);
+	for (int i = 0; i < n; ++i) {
+		float yi = y(i);
+		float hi = h(i);
+		if (std::isnan(yi) || std::isnan(hi)) {
+			r(i) = std::numeric_limits<float>::quiet_NaN();
+		} else {
+			r(i) = (float)((double)yi - (a + b * (double)hi));
+		}
+	}
+
+	// Z-score residuals
+	double mean = 0.0;
+	int cnt = 0;
+	for (int i = 0; i < n; ++i) {
+		if (!std::isnan(r(i))) {
+			mean += r(i);
+			++cnt;
+		}
+	}
+	mean /= (double)cnt;
+
+	double var = 0.0;
+	for (int i = 0; i < n; ++i) {
+		if (!std::isnan(r(i))) {
+			double d = (double)r(i) - mean;
+			var += d * d;
+		}
+	}
+	var /= (double)(cnt - 1);
+	double sd = std::sqrt(var);
+	if (sd == 0.0)
+		throw std::runtime_error("residualize_and_zscore_vector: zero variance after residualization");
+
+	for (int i = 0; i < n; ++i) {
+		if (!std::isnan(r(i)))
+			r(i) = (float)(((double)r(i) - mean) / sd);
+	}
+
+	return r;
 }

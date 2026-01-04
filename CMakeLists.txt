@@ -19,6 +19,7 @@ add_executable(adfinder
 	src/main.cpp
 	src/io/vcf_windows.cpp
 	src/io/bed.cpp
+	src/io/sample_vector.cpp
 	src/core/hybrid_index.cpp
 	src/core/residualize.cpp
 	src/core/scan_blocks.cpp

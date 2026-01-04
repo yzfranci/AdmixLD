@@ -93,3 +93,30 @@ bool scan_target_write_hits(
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1
 );
+
+bool scan_vector_vs_windows_write_hits(
+	const Eigen::MatrixXf& Z,
+	const Eigen::VectorXf& v,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path = "",
+	int distrib_sample = 200000,
+	uint64_t distrib_seed = 1
+);
+
+bool permute_sample_vector_summary(
+	const Eigen::MatrixXf& Z,
+	const Eigen::VectorXf& gZ,
+	const ScanOptions& opt,
+	uint64_t seed,
+	int n_perm,
+	int sample_size,
+	std::vector<PermSummary>& summaries_out
+);
+

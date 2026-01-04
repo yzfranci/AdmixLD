@@ -645,3 +645,255 @@ bool permute_interchrom_summary_chrblock(
 
 	return true;
 }
+
+bool scan_vector_vs_windows_write_hits(
+	const Eigen::MatrixXf& Z,
+	const Eigen::VectorXf& v,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
+) {
+	std::ofstream of(out_path);
+	if (!of) {
+		std::cerr << "Error: cannot write to " << out_path << "\n";
+		return false;
+	}
+
+	const int nsamples = opt.nsamples;
+	const int nwin = (int)Z.cols();
+	const float denom = 1.0f / (float)(nsamples - 1);
+
+	if (v.size() != nsamples) {
+		std::cerr << "Error: scan_vector_vs_windows_write_hits: v size != nsamples\n";
+		return false;
+	}
+
+	// output header
+	of << "tag\twB\tchrB\tposB\tr\tn\n";
+
+	// optional distribution summary (reservoir sample)
+	bool do_distrib = !distrib_path.empty();
+	std::mt19937_64 drng(distrib_seed);
+
+	struct DistribSummary {
+		float min_r = std::numeric_limits<float>::infinity();
+		float max_r = -std::numeric_limits<float>::infinity();
+		long long tested_pairs = 0;
+	};
+
+	DistribSummary ds;
+	std::vector<float> dsample;
+	if (do_distrib) {
+		if (distrib_sample <= 0)
+			distrib_sample = 200000;
+		dsample.reserve((size_t)distrib_sample);
+	}
+
+	auto consider_distrib = [&](float r) {
+		if (!do_distrib)
+			return;
+
+		if (r < ds.min_r) ds.min_r = r;
+		if (r > ds.max_r) ds.max_r = r;
+
+		++ds.tested_pairs;
+
+		if ((int)dsample.size() < distrib_sample) {
+			dsample.push_back(r);
+		} else {
+			std::uniform_int_distribution<long long> U(0, ds.tested_pairs - 1);
+			long long j = U(drng);
+			if (j < distrib_sample)
+				dsample[(size_t)j] = r;
+		}
+	};
+
+	auto keep_hit = [&](float r) -> bool {
+		if (opt.use_asym) {
+			bool keep = false;
+			if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
+				keep = true;
+			if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
+				keep = true;
+			return keep;
+		}
+		return (std::fabs(r) >= opt.min_abs_r);
+	};
+
+	tested_pairs = 0;
+	kept_pairs = 0;
+
+	// Scan in chr blocks for cache friendliness, but we compute one r per window.
+	for (const auto& chr : chr_order) {
+		const auto& idx = windows_by_chr.at(chr);
+
+		for (int k = 0; k < (int)idx.size(); ++k) {
+			int w = idx[k];
+
+			double dot = 0.0;
+			for (int i = 0; i < nsamples; ++i) {
+				float zi = Z(i, w);
+				float vi = v(i);
+				if (!std::isnan(zi) && !std::isnan(vi))
+					dot += (double)zi * (double)vi;
+			}
+
+			float r = (float)(dot * denom);
+
+			++tested_pairs;
+			consider_distrib(r);
+
+			if (keep_hit(r)) {
+				of << "sample_geno"
+					<< "\t" << w
+					<< "\t" << chroms[w]
+					<< "\t" << pos[w]
+					<< "\t" << r
+					<< "\t" << nsamples
+					<< "\n";
+				++kept_pairs;
+			}
+		}
+	}
+
+	of.close();
+
+	if (do_distrib) {
+		std::sort(dsample.begin(), dsample.end());
+
+		float p01 = quantile_from_sorted(dsample, 0.01);
+		float p05 = quantile_from_sorted(dsample, 0.05);
+		float p25 = quantile_from_sorted(dsample, 0.25);
+		float med = quantile_from_sorted(dsample, 0.50);
+		float p75 = quantile_from_sorted(dsample, 0.75);
+		float p95 = quantile_from_sorted(dsample, 0.95);
+		float p99 = quantile_from_sorted(dsample, 0.99);
+
+		std::ofstream df(distrib_path);
+		if (!df) {
+			std::cerr << "Error: cannot write distrib summary to " << distrib_path << "\n";
+			return false;
+		}
+
+		df << "tested_pairs\tmin_r\tp01\tp05\tp25\tmedian\tp75\tp95\tp99\tmax_r\n";
+		df << ds.tested_pairs
+			<< "\t" << ds.min_r
+			<< "\t" << p01
+			<< "\t" << p05
+			<< "\t" << p25
+			<< "\t" << med
+			<< "\t" << p75
+			<< "\t" << p95
+			<< "\t" << p99
+			<< "\t" << ds.max_r
+			<< "\n";
+	}
+
+	return true;
+}
+
+
+bool permute_sample_vector_summary(
+	const Eigen::MatrixXf& Z,
+	const Eigen::VectorXf& gZ,
+	const ScanOptions& opt,
+	uint64_t seed,
+	int n_perm,
+	int sample_size,
+	std::vector<PermSummary>& summaries_out
+) {
+	if (n_perm <= 0) {
+		summaries_out.clear();
+		return true;
+	}
+
+	const int nsamples = opt.nsamples;
+	const int nwin = (int)Z.cols();
+	const float denom = 1.0f / (float)(nsamples - 1);
+
+	if (gZ.size() != nsamples) {
+		std::cerr << "Error: gZ length does not match nsamples\n";
+		return false;
+	}
+
+	if (sample_size <= 0)
+		sample_size = 200000;
+
+	summaries_out.clear();
+	summaries_out.resize((size_t)n_perm);
+
+	std::cout << "Permutation test: sample-geno vs windows\n";
+	std::cout << "  n_perm      = " << n_perm << "\n";
+	std::cout << "  sample_size = " << sample_size << "\n";
+
+	#ifdef ADFINDER_HAS_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	#endif
+	for (int rep = 0; rep < n_perm; ++rep) {
+		std::mt19937_64 rng(seed + (uint64_t)rep);
+
+		// permutation of sample indices
+		std::vector<int> perm(nsamples);
+		for (int i = 0; i < nsamples; ++i)
+			perm[i] = i;
+		std::shuffle(perm.begin(), perm.end(), rng);
+
+		PermSummary s;
+		s.min_r = std::numeric_limits<float>::infinity();
+		s.max_r = -std::numeric_limits<float>::infinity();
+
+		std::vector<float> sample;
+		sample.reserve((size_t)sample_size);
+
+		long long seen = 0;
+
+		// loop over windows
+		for (int w = 0; w < nwin; ++w) {
+			double dot = 0.0;
+
+			for (int i = 0; i < nsamples; ++i) {
+				float zi = Z(i, w);
+				float gi = gZ(perm[i]);
+
+				if (!std::isnan(zi) && !std::isnan(gi))
+					dot += (double)zi * (double)gi;
+			}
+
+			float r = (float)(dot * denom);
+
+			if (r < s.min_r) s.min_r = r;
+			if (r > s.max_r) s.max_r = r;
+
+			++seen;
+			if ((int)sample.size() < sample_size) {
+				sample.push_back(r);
+			} else {
+				std::uniform_int_distribution<long long> U(0, seen - 1);
+				long long j = U(rng);
+				if (j < sample_size)
+					sample[(size_t)j] = r;
+			}
+		}
+
+		std::sort(sample.begin(), sample.end());
+		s.p01 = quantile_from_sorted(sample, 0.01);
+		s.p05 = quantile_from_sorted(sample, 0.05);
+		s.p25 = quantile_from_sorted(sample, 0.25);
+		s.median = quantile_from_sorted(sample, 0.50);
+		s.p75 = quantile_from_sorted(sample, 0.75);
+		s.p95 = quantile_from_sorted(sample, 0.95);
+		s.p99 = quantile_from_sorted(sample, 0.99);
+
+		summaries_out[(size_t)rep] = s;
+	}
+
+	return true;
+}

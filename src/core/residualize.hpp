@@ -10,3 +10,9 @@ Eigen::MatrixXf residualize_and_zscore(
 	const Eigen::VectorXf& h,
 	int& n_valid_windows
 );
+
+Eigen::VectorXf residualize_and_zscore_vector(
+	const Eigen::VectorXf& y,
+	const Eigen::VectorXf& h,
+	int& n_valid
+);
