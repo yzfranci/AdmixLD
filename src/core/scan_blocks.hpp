@@ -20,6 +20,8 @@ struct ScanOptions {
 	float min_pos_r = 0.0f;	// threshold applied as r >= min_pos_r
 
 	int nsamples = 0;
+
+	int threads = 1;
 };
 
 std::unordered_map<std::string, std::vector<int>> group_by_chr(

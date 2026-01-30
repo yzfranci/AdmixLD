@@ -7,6 +7,7 @@
 #include <random>
 #include <chrono>
 #include <iomanip>
+#include <cstdio>
 
 #ifdef ADFINDER_HAS_OPENMP
 #include <omp.h>
@@ -68,87 +69,133 @@ bool scan_blocks_write_hits(
 	int distrib_sample,
 	uint64_t distrib_seed
 ) {
-	std::ofstream of(out_path);
-	if (!of) {
-		std::cerr << "Error: cannot write to " << out_path << "\n";
-		return false;
-	}
-
-	int nsamples = opt.nsamples;
-	int block_size = opt.block_size;
-	float min_abs_r = opt.min_abs_r;
+	const int nsamples = opt.nsamples;
+	const int block_size = opt.block_size;
 
 	std::cout << "[scan] intra=" << (opt.intra ? 1 : 0)
 		  << " max_dist=" << opt.max_dist
 		  << " block_size=" << opt.block_size
 		  << "\n";
 
-	of << "wA\tchrA\tposA\twB\tchrB\tposB\tr\tn\n";
-
 	tested_pairs = 0;
 	kept_pairs = 0;
 
-	bool do_distrib = (!distrib_path.empty());
+	const bool do_distrib = (!distrib_path.empty());
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
-	ScanSummary ds;
-	ds.tested_pairs = 0;
-	ds.min_r = std::numeric_limits<float>::infinity();
-	ds.max_r = -std::numeric_limits<float>::infinity();
+	int nthreads = 1;
+	#ifdef ADFINDER_HAS_OPENMP
+		nthreads = opt.threads;
+		omp_set_num_threads(nthreads);
+	#endif
 
-	std::mt19937_64 drng(distrib_seed);
-	std::vector<float> dsample;
-	if (do_distrib) {
-		dsample.reserve((size_t)distrib_sample);
+	// One temp file per thread
+	std::vector<std::string> part_paths((size_t)nthreads);
+	for (int t = 0; t < nthreads; ++t) {
+		part_paths[(size_t)t] = out_path + ".part." + std::to_string(t);
+		std::remove(part_paths[(size_t)t].c_str());
 	}
 
-	auto consider_distrib = [&](float r) {
-		if (!do_distrib)
-			return;
+	// Per-thread counters
+	std::vector<long long> tested_t((size_t)nthreads, 0);
+	std::vector<long long> kept_t((size_t)nthreads, 0);
 
-		if (r < ds.min_r) ds.min_r = r;
-		if (r > ds.max_r) ds.max_r = r;
+	// Per-thread distrib tracking
+	struct ThreadDistrib {
+		long long tested_pairs = 0;
+		float min_r = std::numeric_limits<float>::infinity();
+		float max_r = -std::numeric_limits<float>::infinity();
+		std::mt19937_64 rng;
+		std::vector<float> sample;
+	};
 
-		++ds.tested_pairs;
-
-		if ((int)dsample.size() < distrib_sample) {
-			dsample.push_back(r);
-		} else {
-			std::uniform_int_distribution<long long> U(0, ds.tested_pairs - 1);
-			long long j = U(drng);
-			if (j < distrib_sample)
-				dsample[(size_t)j] = r;
+	std::vector<ThreadDistrib> td;
+	if (do_distrib) {
+		td.resize((size_t)nthreads);
+		for (int t = 0; t < nthreads; ++t) {
+			td[(size_t)t].rng = std::mt19937_64(distrib_seed + (uint64_t)t);
+			td[(size_t)t].sample.reserve((size_t)distrib_sample);
 		}
+	}
+
+	auto keep_hit = [&](float r) -> bool {
+		if (opt.use_asym) {
+			bool keep = false;
+			if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
+				keep = true;
+			if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
+				keep = true;
+			return keep;
+		}
+		return (std::fabs(r) >= opt.min_abs_r);
 	};
 
 	const float denom = 1.0f / (float)(nsamples - 1);
 
-	Eigen::MatrixXf A(nsamples, block_size);
-	Eigen::MatrixXf B(nsamples, block_size);
-	Eigen::MatrixXf R(block_size, block_size);
-
-	auto emit_hit = [&](int a, int b, float r) {
-		of << a << "\t" << chroms[a] << "\t" << pos[a] << "\t"
-		<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
-		<< r << "\t" << nsamples << "\n";
-		++kept_pairs;
-	};
-
-
 	if (opt.intra) {
-		for (const auto& chr : chr_order) {
+		const int C = (int)chr_order.size();
+
+		#ifdef ADFINDER_HAS_OPENMP
+		#pragma omp parallel for schedule(dynamic)
+		#endif
+		for (int c = 0; c < C; ++c) {
+			int tid = 0;
+			#ifdef ADFINDER_HAS_OPENMP
+			tid = omp_get_thread_num();
+			#endif
+
+			const auto& chr = chr_order[c];
 			const auto& idx = windows_by_chr.at(chr);
-			int m = (int)idx.size();
+			const int m = (int)idx.size();
+
+			std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (!ofp) {
+				#ifdef ADFINDER_HAS_OPENMP
+				#pragma omp critical
+				#endif
+				{
+					std::cerr << "Error: cannot write to " << part_paths[(size_t)tid] << "\n";
+				}
+				continue;
+			}
+
+			Eigen::MatrixXf A(nsamples, block_size);
+			Eigen::MatrixXf B(nsamples, block_size);
+			Eigen::MatrixXf R(block_size, block_size);
+
+			long long tested_local = 0;
+			long long kept_local = 0;
+
+			auto consider_distrib = [&](float r) {
+				if (!do_distrib)
+					return;
+
+				auto& d = td[(size_t)tid];
+
+				if (r < d.min_r) d.min_r = r;
+				if (r > d.max_r) d.max_r = r;
+
+				++d.tested_pairs;
+
+				if ((int)d.sample.size() < distrib_sample) {
+					d.sample.push_back(r);
+				} else {
+					std::uniform_int_distribution<long long> U(0, d.tested_pairs - 1);
+					long long j = U(d.rng);
+					if (j < distrib_sample)
+						d.sample[(size_t)j] = r;
+				}
+			};
 
 			for (int i0 = 0; i0 < m; i0 += block_size) {
-				int b1 = std::min(block_size, m - i0);
+				const int b1 = std::min(block_size, m - i0);
 
 				for (int k = 0; k < b1; ++k)
 					A.col(k) = Z.col(idx[i0 + k]);
 
 				for (int j0 = i0; j0 < m; j0 += block_size) {
-					int b2 = std::min(block_size, m - j0);
+					const int b2 = std::min(block_size, m - j0);
 
 					for (int k = 0; k < b2; ++k)
 						B.col(k) = Z.col(idx[j0 + k]);
@@ -157,8 +204,8 @@ bool scan_blocks_write_hits(
 					R.topLeftCorner(b1, b2) *= denom;
 
 					for (int ia = 0; ia < b1; ++ia) {
-						int a = idx[i0 + ia];
-						int posA = pos[a];
+						const int a = idx[i0 + ia];
+						const int posA = pos[a];
 
 						int jb_start = 0;
 						if (j0 == i0)
@@ -166,12 +213,9 @@ bool scan_blocks_write_hits(
 
 						int jb_end = b2;
 
-						// Distance filter (only for intra)
 						if (opt.max_dist >= 0) {
-							int limit = posA + opt.max_dist;
+							const int limit = posA + opt.max_dist;
 
-							// idx is assumed sorted by pos[] within chromosome.
-							// Search within the j-block [j0, j0+b2) for first pos > limit.
 							auto begin_it = idx.begin() + j0;
 							auto end_it = idx.begin() + j0 + b2;
 
@@ -182,103 +226,171 @@ bool scan_blocks_write_hits(
 							);
 
 							jb_end = (int)std::distance(begin_it, ub);
-
-							// jb_end is relative to begin_it; convert to [0,b2]
-							// (distance already in that coordinate system)
 						}
 
 						if (jb_end <= jb_start)
 							continue;
 
 						for (int ib = jb_start; ib < jb_end; ++ib) {
-							int b = idx[j0 + ib];
-							float r = R(ia, ib);
+							const int b = idx[j0 + ib];
+							const float r = R(ia, ib);
 
-							++tested_pairs;
-
+							++tested_local;
 							consider_distrib(r);
 
-							bool keep = false;
-
-							if (opt.use_asym) {
-								if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
-									keep = true;
-								if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
-									keep = true;
-							} else {
-								if (std::fabs(r) >= opt.min_abs_r)
-									keep = true;
+							if (keep_hit(r)) {
+								ofp << a << "\t" << chroms[a] << "\t" << pos[a] << "\t"
+									<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
+									<< r << "\t" << nsamples << "\n";
+								++kept_local;
 							}
-
-							if (keep)
-								emit_hit(a, b, r);
-
 						}
 					}
-
 				}
 			}
+
+			tested_t[(size_t)tid] += tested_local;
+			kept_t[(size_t)tid] += kept_local;
 		}
 	} else {
-		int C = (int)chr_order.size();
+		const int C = (int)chr_order.size();
 
-		for (int c1 = 0; c1 < C; ++c1) {
+		std::vector<std::pair<int,int>> jobs;
+		jobs.reserve((size_t)C * (size_t)(C - 1) / 2);
+		for (int c1 = 0; c1 < C; ++c1)
+			for (int c2 = c1 + 1; c2 < C; ++c2)
+				jobs.push_back({c1, c2});
+
+		#ifdef ADFINDER_HAS_OPENMP
+		#pragma omp parallel for schedule(dynamic)
+		#endif
+		for (int j = 0; j < (int)jobs.size(); ++j) {
+			int tid = 0;
+			#ifdef ADFINDER_HAS_OPENMP
+			tid = omp_get_thread_num();
+			#endif
+
+			const int c1 = jobs[(size_t)j].first;
+			const int c2 = jobs[(size_t)j].second;
+
 			const auto& chr1 = chr_order[c1];
+			const auto& chr2 = chr_order[c2];
 			const auto& idx1 = windows_by_chr.at(chr1);
-			int m1 = (int)idx1.size();
+			const auto& idx2 = windows_by_chr.at(chr2);
+			const int m1 = (int)idx1.size();
+			const int m2 = (int)idx2.size();
 
-			for (int c2 = c1 + 1; c2 < C; ++c2) {
-				const auto& chr2 = chr_order[c2];
-				const auto& idx2 = windows_by_chr.at(chr2);
-				int m2 = (int)idx2.size();
+			std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (!ofp) {
+				#ifdef ADFINDER_HAS_OPENMP
+				#pragma omp critical
+				#endif
+				{
+					std::cerr << "Error: cannot write to " << part_paths[(size_t)tid] << "\n";
+				}
+				continue;
+			}
 
-				for (int i0 = 0; i0 < m1; i0 += block_size) {
-					int b1 = std::min(block_size, m1 - i0);
+			Eigen::MatrixXf A(nsamples, block_size);
+			Eigen::MatrixXf B(nsamples, block_size);
+			Eigen::MatrixXf R(block_size, block_size);
 
-					for (int k = 0; k < b1; ++k)
-						A.col(k) = Z.col(idx1[i0 + k]);
+			long long tested_local = 0;
+			long long kept_local = 0;
 
-					for (int j0 = 0; j0 < m2; j0 += block_size) {
-						int b2 = std::min(block_size, m2 - j0);
+			auto consider_distrib = [&](float r) {
+				if (!do_distrib)
+					return;
 
-						for (int k = 0; k < b2; ++k)
-							B.col(k) = Z.col(idx2[j0 + k]);
+				auto& d = td[(size_t)tid];
 
-						R.topLeftCorner(b1, b2).noalias() = A.leftCols(b1).transpose() * B.leftCols(b2);
-						R.topLeftCorner(b1, b2) *= denom;
+				if (r < d.min_r) d.min_r = r;
+				if (r > d.max_r) d.max_r = r;
 
-						for (int ia = 0; ia < b1; ++ia) {
-							int a = idx1[i0 + ia];
-							for (int ib = 0; ib < b2; ++ib) {
-								int b = idx2[j0 + ib];
-								float r = R(ia, ib);
+				++d.tested_pairs;
 
-								++tested_pairs;
+				if ((int)d.sample.size() < distrib_sample) {
+					d.sample.push_back(r);
+				} else {
+					std::uniform_int_distribution<long long> U(0, d.tested_pairs - 1);
+					long long j2 = U(d.rng);
+					if (j2 < distrib_sample)
+						d.sample[(size_t)j2] = r;
+				}
+			};
 
-								consider_distrib(r);
+			for (int i0 = 0; i0 < m1; i0 += block_size) {
+				const int b1 = std::min(block_size, m1 - i0);
 
-								bool keep = false;
+				for (int k = 0; k < b1; ++k)
+					A.col(k) = Z.col(idx1[i0 + k]);
 
-								if (opt.use_asym) {
-									if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
-										keep = true;
-									if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
-										keep = true;
-								} else {
-									if (std::fabs(r) >= opt.min_abs_r)
-										keep = true;
-								}
+				for (int j0 = 0; j0 < m2; j0 += block_size) {
+					const int b2 = std::min(block_size, m2 - j0);
 
-								if (keep)
-									emit_hit(a, b, r);
+					for (int k = 0; k < b2; ++k)
+						B.col(k) = Z.col(idx2[j0 + k]);
+
+					R.topLeftCorner(b1, b2).noalias() = A.leftCols(b1).transpose() * B.leftCols(b2);
+					R.topLeftCorner(b1, b2) *= denom;
+
+					for (int ia = 0; ia < b1; ++ia) {
+						const int a = idx1[i0 + ia];
+						for (int ib = 0; ib < b2; ++ib) {
+							const int b = idx2[j0 + ib];
+							const float r = R(ia, ib);
+
+							++tested_local;
+							consider_distrib(r);
+
+							if (keep_hit(r)) {
+								ofp << a << "\t" << chroms[a] << "\t" << pos[a] << "\t"
+									<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
+									<< r << "\t" << nsamples << "\n";
+								++kept_local;
 							}
 						}
 					}
 				}
 			}
+
+			tested_t[(size_t)tid] += tested_local;
+			kept_t[(size_t)tid] += kept_local;
 		}
 	}
 
+	// Aggregate counts
+	for (int t = 0; t < nthreads; ++t) {
+		tested_pairs += tested_t[(size_t)t];
+		kept_pairs += kept_t[(size_t)t];
+	}
+
+	// Merge part files into final output
+	{
+		std::ofstream of(out_path);
+		if (!of) {
+			std::cerr << "Error: cannot write to " << out_path << "\n";
+			return false;
+		}
+
+		of << "wA\tchrA\tposA\twB\tchrB\tposB\tr\tn\n";
+
+		for (int t = 0; t < nthreads; ++t) {
+			std::ifstream pf(part_paths[(size_t)t]);
+			if (!pf)
+				continue;
+
+			std::string line;
+			while (std::getline(pf, line))
+				of << line << "\n";
+		}
+	}
+
+	// Cleanup part files
+	for (int t = 0; t < nthreads; ++t)
+		std::remove(part_paths[(size_t)t].c_str());
+
+	// Write distrib summary (merged)
 	if (do_distrib) {
 		std::ofstream df(distrib_path);
 		if (!df) {
@@ -288,28 +400,54 @@ bool scan_blocks_write_hits(
 
 		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
 
-		if (ds.tested_pairs == 0 || dsample.empty()) {
+		long long total_tested = 0;
+		float global_min = std::numeric_limits<float>::infinity();
+		float global_max = -std::numeric_limits<float>::infinity();
+
+		std::vector<float> dsample;
+		dsample.reserve((size_t)distrib_sample * (size_t)nthreads);
+
+		for (int t = 0; t < nthreads; ++t) {
+			const auto& d = td[(size_t)t];
+			if (d.tested_pairs == 0)
+				continue;
+
+			total_tested += d.tested_pairs;
+			if (d.min_r < global_min) global_min = d.min_r;
+			if (d.max_r > global_max) global_max = d.max_r;
+
+			dsample.insert(dsample.end(), d.sample.begin(), d.sample.end());
+		}
+
+		if (total_tested == 0 || dsample.empty()) {
 			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
-			std::sort(dsample.begin(), dsample.end());
-			ds.p01 = quantile_from_sorted(dsample, 0.01);
-			ds.p05 = quantile_from_sorted(dsample, 0.05);
-			ds.p25 = quantile_from_sorted(dsample, 0.25);
-			ds.median = quantile_from_sorted(dsample, 0.50);
-			ds.p75 = quantile_from_sorted(dsample, 0.75);
-			ds.p95 = quantile_from_sorted(dsample, 0.95);
-			ds.p99 = quantile_from_sorted(dsample, 0.99);
+			if ((int)dsample.size() > distrib_sample) {
+				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+				std::shuffle(dsample.begin(), dsample.end(), rng);
+				dsample.resize((size_t)distrib_sample);
+			}
 
-			df << ds.tested_pairs
-				<< "\t" << ds.max_r
-				<< "\t" << ds.p99
-				<< "\t" << ds.p95
-				<< "\t" << ds.p75
-				<< "\t" << ds.median
-				<< "\t" << ds.p25
-				<< "\t" << ds.p05
-				<< "\t" << ds.p01
-				<< "\t" << ds.min_r
+			std::sort(dsample.begin(), dsample.end());
+
+			float p01 = quantile_from_sorted(dsample, 0.01);
+			float p05 = quantile_from_sorted(dsample, 0.05);
+			float p25 = quantile_from_sorted(dsample, 0.25);
+			float med = quantile_from_sorted(dsample, 0.50);
+			float p75 = quantile_from_sorted(dsample, 0.75);
+			float p95 = quantile_from_sorted(dsample, 0.95);
+			float p99 = quantile_from_sorted(dsample, 0.99);
+
+			df << total_tested
+				<< "\t" << global_max
+				<< "\t" << p99
+				<< "\t" << p95
+				<< "\t" << p75
+				<< "\t" << med
+				<< "\t" << p25
+				<< "\t" << p05
+				<< "\t" << p01
+				<< "\t" << global_min
 				<< "\n";
 		}
 	}
@@ -332,72 +470,125 @@ bool scan_target_write_hits(
 	int distrib_sample,
 	uint64_t distrib_seed
 ) {
-	std::ofstream of(out_path);
-	if (!of) {
-		std::cerr << "Error: cannot write to " << out_path << "\n";
-		return false;
-	}
-
-	bool do_distrib = (!distrib_path.empty());
+	const bool do_distrib = (!distrib_path.empty());
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
-	int nsamples = opt.nsamples;
-	int block_size = opt.block_size;
-	float min_abs_r = opt.min_abs_r;
+	const int nsamples = opt.nsamples;
+	const int block_size = opt.block_size;
 	const float denom = 1.0f / (float)(nsamples - 1);
-
-	ScanSummary ds;
-	ds.tested_pairs = 0;
-	ds.min_r = std::numeric_limits<float>::infinity();
-	ds.max_r = -std::numeric_limits<float>::infinity();
-
-	std::mt19937_64 drng(distrib_seed);
-	std::vector<float> dsample;
-	if (do_distrib)
-		dsample.reserve((size_t)distrib_sample);
-
-	auto consider_distrib = [&](float r) {
-		if (!do_distrib)
-			return;
-
-		if (r < ds.min_r) ds.min_r = r;
-		if (r > ds.max_r) ds.max_r = r;
-
-		++ds.tested_pairs;
-
-		if ((int)dsample.size() < distrib_sample) {
-			dsample.push_back(r);
-		} else {
-			std::uniform_int_distribution<long long> U(0, ds.tested_pairs - 1);
-			long long j = U(drng);
-			if (j < distrib_sample)
-				dsample[(size_t)j] = r;
-		}
-	};
-
-	of << "wA\tchrA\tposA\twB\tchrB\tposB\tr\tn\n";
 
 	tested_pairs = 0;
 	kept_pairs = 0;
 
-	Eigen::VectorXf v = Z.col(target_w);				// nsamples
-	Eigen::MatrixXf B(nsamples, block_size);			// nsamples x b2
-	Eigen::RowVectorXf R(block_size);					// 1 x b2
+	const Eigen::VectorXf v = Z.col(target_w);
 
 	const std::string& tchr = chroms[target_w];
-	int tpos = pos[target_w];
+	const int tpos = pos[target_w];
 
-	for (const auto& chr : chr_order) {
-		const auto& idx = windows_by_chr.at(chr);
-		int m = (int)idx.size();
+	int nthreads = 1;
+	#ifdef ADFINDER_HAS_OPENMP
+		nthreads = opt.threads;
+		omp_set_num_threads(nthreads);
+	#endif
 
-		// If not intra, skip target chromosome entirely
+	std::vector<std::string> part_paths((size_t)nthreads);
+	for (int t = 0; t < nthreads; ++t) {
+		part_paths[(size_t)t] = out_path + ".part." + std::to_string(t);
+		std::remove(part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<long long> tested_t((size_t)nthreads, 0);
+	std::vector<long long> kept_t((size_t)nthreads, 0);
+
+	struct ThreadDistrib {
+		long long tested_pairs = 0;
+		float min_r = std::numeric_limits<float>::infinity();
+		float max_r = -std::numeric_limits<float>::infinity();
+		std::mt19937_64 rng;
+		std::vector<float> sample;
+	};
+
+	std::vector<ThreadDistrib> td;
+	if (do_distrib) {
+		td.resize((size_t)nthreads);
+		for (int t = 0; t < nthreads; ++t) {
+			td[(size_t)t].rng = std::mt19937_64(distrib_seed + (uint64_t)t);
+			td[(size_t)t].sample.reserve((size_t)distrib_sample);
+		}
+	}
+
+	auto keep_hit = [&](float r) -> bool {
+		if (opt.use_asym) {
+			bool keep = false;
+			if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
+				keep = true;
+			if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
+				keep = true;
+			return keep;
+		}
+		return (std::fabs(r) >= opt.min_abs_r);
+	};
+
+	const int C = (int)chr_order.size();
+
+	#ifdef ADFINDER_HAS_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	#endif
+	for (int c = 0; c < C; ++c) {
+		int tid = 0;
+		#ifdef ADFINDER_HAS_OPENMP
+		tid = omp_get_thread_num();
+		#endif
+
+		const auto& chr = chr_order[c];
+
 		if (!opt.intra && chr == tchr)
 			continue;
 
+		const auto& idx = windows_by_chr.at(chr);
+		const int m = (int)idx.size();
+
+		std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
+		if (!ofp) {
+			#ifdef ADFINDER_HAS_OPENMP
+			#pragma omp critical
+			#endif
+			{
+				std::cerr << "Error: cannot write to " << part_paths[(size_t)tid] << "\n";
+			}
+			continue;
+		}
+
+		Eigen::MatrixXf B(nsamples, block_size);
+		Eigen::RowVectorXf R(block_size);
+
+		long long tested_local = 0;
+		long long kept_local = 0;
+
+		auto consider_distrib = [&](float r) {
+			if (!do_distrib)
+				return;
+
+			auto& d = td[(size_t)tid];
+
+			if (r < d.min_r) d.min_r = r;
+			if (r > d.max_r) d.max_r = r;
+
+			++d.tested_pairs;
+
+			if ((int)d.sample.size() < distrib_sample) {
+				d.sample.push_back(r);
+			} else {
+				std::uniform_int_distribution<long long> U(0, d.tested_pairs - 1);
+				long long j = U(d.rng);
+				if (j < distrib_sample)
+					d.sample[(size_t)j] = r;
+			}
+		};
+
 		for (int j0 = 0; j0 < m; j0 += block_size) {
-			int b2 = std::min(block_size, m - j0);
+			const int b2 = std::min(block_size, m - j0);
 
 			for (int k = 0; k < b2; ++k)
 				B.col(k) = Z.col(idx[j0 + k]);
@@ -406,46 +597,64 @@ bool scan_target_write_hits(
 			R.head(b2) *= denom;
 
 			for (int ib = 0; ib < b2; ++ib) {
-				int b = idx[j0 + ib];
+				const int b = idx[j0 + ib];
 
 				if (b == target_w)
 					continue;
 
-				// If intra + max_dist, enforce distance on same chr only
-				if (opt.intra && opt.max_dist >= 0 && chroms[b] == tchr) {
+				if (opt.intra && opt.max_dist >= 0 && chr == tchr) {
 					int d = pos[b] - tpos;
 					if (d < 0) d = -d;
 					if (d > opt.max_dist)
 						continue;
 				}
 
-				float r = R(ib);
-				++tested_pairs;
+				const float r = R(ib);
+
+				++tested_local;
 				consider_distrib(r);
 
-				bool keep = false;
-
-				if (opt.use_asym) {
-					if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
-						keep = true;
-					if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
-						keep = true;
-				} else {
-					if (std::fabs(r) >= opt.min_abs_r)
-						keep = true;
-				}
-
-				if (keep) {
-					of << target_w << "\t" << chroms[target_w] << "\t" << pos[target_w] << "\t"
+				if (keep_hit(r)) {
+					ofp << target_w << "\t" << chroms[target_w] << "\t" << pos[target_w] << "\t"
 						<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
 						<< r << "\t" << nsamples << "\n";
-					++kept_pairs;
+					++kept_local;
 				}
 			}
 		}
+
+		tested_t[(size_t)tid] += tested_local;
+		kept_t[(size_t)tid] += kept_local;
 	}
 
-	// Write distrib summary if requested
+	for (int t = 0; t < nthreads; ++t) {
+		tested_pairs += tested_t[(size_t)t];
+		kept_pairs += kept_t[(size_t)t];
+	}
+
+	{
+		std::ofstream of(out_path);
+		if (!of) {
+			std::cerr << "Error: cannot write to " << out_path << "\n";
+			return false;
+		}
+
+		of << "wA\tchrA\tposA\twB\tchrB\tposB\tr\tn\n";
+
+		for (int t = 0; t < nthreads; ++t) {
+			std::ifstream pf(part_paths[(size_t)t]);
+			if (!pf)
+				continue;
+
+			std::string line;
+			while (std::getline(pf, line))
+				of << line << "\n";
+		}
+	}
+
+	for (int t = 0; t < nthreads; ++t)
+		std::remove(part_paths[(size_t)t].c_str());
+
 	if (do_distrib) {
 		std::ofstream df(distrib_path);
 		if (!df) {
@@ -455,28 +664,54 @@ bool scan_target_write_hits(
 
 		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
 
-		if (ds.tested_pairs == 0 || dsample.empty()) {
+		long long total_tested = 0;
+		float global_min = std::numeric_limits<float>::infinity();
+		float global_max = -std::numeric_limits<float>::infinity();
+
+		std::vector<float> dsample;
+		dsample.reserve((size_t)distrib_sample * (size_t)nthreads);
+
+		for (int t = 0; t < nthreads; ++t) {
+			const auto& d = td[(size_t)t];
+			if (d.tested_pairs == 0)
+				continue;
+
+			total_tested += d.tested_pairs;
+			if (d.min_r < global_min) global_min = d.min_r;
+			if (d.max_r > global_max) global_max = d.max_r;
+
+			dsample.insert(dsample.end(), d.sample.begin(), d.sample.end());
+		}
+
+		if (total_tested == 0 || dsample.empty()) {
 			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
-			std::sort(dsample.begin(), dsample.end());
-			ds.p01 = quantile_from_sorted(dsample, 0.01);
-			ds.p05 = quantile_from_sorted(dsample, 0.05);
-			ds.p25 = quantile_from_sorted(dsample, 0.25);
-			ds.median = quantile_from_sorted(dsample, 0.50);
-			ds.p75 = quantile_from_sorted(dsample, 0.75);
-			ds.p95 = quantile_from_sorted(dsample, 0.95);
-			ds.p99 = quantile_from_sorted(dsample, 0.99);
+			if ((int)dsample.size() > distrib_sample) {
+				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+				std::shuffle(dsample.begin(), dsample.end(), rng);
+				dsample.resize((size_t)distrib_sample);
+			}
 
-			df << ds.tested_pairs
-				<< "\t" << ds.max_r
-				<< "\t" << ds.p99
-				<< "\t" << ds.p95
-				<< "\t" << ds.p75
-				<< "\t" << ds.median
-				<< "\t" << ds.p25
-				<< "\t" << ds.p05
-				<< "\t" << ds.p01
-				<< "\t" << ds.min_r
+			std::sort(dsample.begin(), dsample.end());
+
+			float p01 = quantile_from_sorted(dsample, 0.01);
+			float p05 = quantile_from_sorted(dsample, 0.05);
+			float p25 = quantile_from_sorted(dsample, 0.25);
+			float med = quantile_from_sorted(dsample, 0.50);
+			float p75 = quantile_from_sorted(dsample, 0.75);
+			float p95 = quantile_from_sorted(dsample, 0.95);
+			float p99 = quantile_from_sorted(dsample, 0.99);
+
+			df << total_tested
+				<< "\t" << global_max
+				<< "\t" << p99
+				<< "\t" << p95
+				<< "\t" << p75
+				<< "\t" << med
+				<< "\t" << p25
+				<< "\t" << p05
+				<< "\t" << p01
+				<< "\t" << global_min
 				<< "\n";
 		}
 	}

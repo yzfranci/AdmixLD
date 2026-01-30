@@ -35,6 +35,7 @@ static void usage() {
 		<< "  --unweighted-hi     Use unweighted HI (mean(dosage)/2; legacy behavior)\n"
 		<< "  --pos-is-start   For weighted HI: interpret VCF window pos as START (default assumes END)\n"
 		<< "  --block-size INT   Block size for processing (default: 1024)\n"
+		<< "  --threads INT      Number of OpenMP threads for scan steps (default: 1)\n"
 		<< "  --distrib              Write empirical scan r distribution summary\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distrib summary (default: 200000)\n"
 		<< "  --permute N            Run N interchrom chr-block permutations (summary stats)\n"
@@ -63,6 +64,7 @@ int main(int argc, char** argv) {
 	int max_dist = -1;
 	int max_windows = -1;	// <=0 means loader default cap
 	int block_size = ADFINDER_DEFAULT_BLOCK_SIZE;
+	int threads = 1;
 	int n_perm = 0;
 	int perm_sample = 200000;
 	uint64_t seed = 1;
@@ -112,6 +114,9 @@ int main(int argc, char** argv) {
 
 		} else if (a == "--block-size" && i + 1 < argc) {
 			block_size = std::stoi(argv[++i]);
+
+		} else if (a == "--threads" && i + 1 < argc) {
+			threads = std::stoi(argv[++i]);
 
 		} else if (a == "--permute" && i + 1 < argc) {
 			n_perm = std::stoi(argv[++i]);
@@ -163,6 +168,11 @@ int main(int argc, char** argv) {
 	if (vcf_path.empty() || out.empty()) {
 		std::cerr << "Error: --vcf and --out are required.\n";
 		usage();
+		return 2;
+	}
+
+	if (threads < 1) {
+		std::cerr << "Error: --threads must be >= 1\n";
 		return 2;
 	}
 
@@ -462,6 +472,7 @@ int main(int argc, char** argv) {
 	popt.max_dist = max_dist;
 	popt.block_size = block_size;
 	popt.nsamples = nsamples;
+	popt.threads = threads;
 	popt.min_abs_r = (float)min_abs_r;
 	popt.use_asym = false;
 	popt.min_neg_r = 0.0f;
@@ -564,6 +575,7 @@ int main(int argc, char** argv) {
 	opt.max_dist = max_dist;
 	opt.block_size = block_size;
 	opt.nsamples = nsamples;
+	opt.threads = threads;
 	opt.min_abs_r = (float)min_abs_r;
 	opt.use_asym = use_asym;
 	opt.min_neg_r = min_neg_r;
