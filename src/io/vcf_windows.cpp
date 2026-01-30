@@ -50,8 +50,7 @@ WindowMatrix load_windows_from_vcf(
 	const float NA = std::numeric_limits<float>::quiet_NaN();
 
 	out.meta.chrom.reserve(max_windows_load);
-	out.meta.start.reserve(max_windows_load);
-	out.meta.end.reserve(max_windows_load);
+	out.meta.pos.reserve(max_windows_load);
 
 	bcf1_t* rec = bcf_init();
 	int nwin = 0;
@@ -60,18 +59,10 @@ WindowMatrix load_windows_from_vcf(
 		bcf_unpack(rec, BCF_UN_STR);
 
 		const char* chrom = bcf_hdr_id2name(hdr, rec->rid);
-		int start = rec->pos + 1;
-
-		int end = start;
-		int32_t* end_ptr = nullptr;
-		int nend = 0;
-		if (bcf_get_info_int32(hdr, rec, "END", &end_ptr, &nend) > 0 && nend > 0)
-			end = end_ptr[0];
-		free(end_ptr);
+		int pos = rec->pos + 1;	// VCF POS is 0-based in htslib, convert to 1-based
 
 		out.meta.chrom.emplace_back(chrom);
-		out.meta.start.push_back(start);
-		out.meta.end.push_back(end);
+		out.meta.pos.push_back(pos);
 
 		if (has_ds) {
 			float* ds = nullptr;

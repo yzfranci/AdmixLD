@@ -783,19 +783,20 @@ bool scan_vector_vs_windows_write_hits(
 			return false;
 		}
 
-		df << "tested_pairs\tmin_r\tp01\tp05\tp25\tmedian\tp75\tp95\tp99\tmax_r\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
 		df << ds.tested_pairs
-			<< "\t" << ds.min_r
-			<< "\t" << p01
-			<< "\t" << p05
-			<< "\t" << p25
-			<< "\t" << med
-			<< "\t" << p75
-			<< "\t" << p95
-			<< "\t" << p99
 			<< "\t" << ds.max_r
+			<< "\t" << p99
+			<< "\t" << p95
+			<< "\t" << p75
+			<< "\t" << med
+			<< "\t" << p25
+			<< "\t" << p05
+			<< "\t" << p01
+			<< "\t" << ds.min_r
 			<< "\n";
 	}
+
 
 	return true;
 }
@@ -829,10 +830,6 @@ bool permute_sample_vector_summary(
 
 	summaries_out.clear();
 	summaries_out.resize((size_t)n_perm);
-
-	std::cout << "Permutation test: sample-geno vs windows\n";
-	std::cout << "  n_perm      = " << n_perm << "\n";
-	std::cout << "  sample_size = " << sample_size << "\n";
 
 	#ifdef ADFINDER_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic)

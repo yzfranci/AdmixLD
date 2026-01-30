@@ -6,8 +6,7 @@
 
 struct WindowMeta {
 	std::vector<std::string> chrom;
-	std::vector<int> start;
-	std::vector<int> end;	// keep even if you don’t output it; useful later
+	std::vector<int> pos;
 };
 
 struct WindowMatrix {

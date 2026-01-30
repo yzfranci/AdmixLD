@@ -32,7 +32,8 @@ static void usage() {
 		<< "  --max-dist INT     Intra only: max end-distance (bp) between window pairs\n"
 		<< "  --max-windows N    Load at most N windows (default cap if <=0)\n"
 		<< "  --hi FILE          User provided hybrid index file (TSV: sample<TAB>hi)\n"
-		<< "  --full-hi           Compute hybrid index using the full VCF (ignore --chr/--bed)\n"
+		<< "  --unweighted-hi     Use unweighted HI (mean(dosage)/2; legacy behavior)\n"
+		<< "  --pos-is-start   For weighted HI: interpret VCF window pos as START (default assumes END)\n"
 		<< "  --block-size INT   Block size for processing (default: 1024)\n"
 		<< "  --distrib              Write empirical scan r distribution summary\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distrib summary (default: 200000)\n"
@@ -55,7 +56,8 @@ int main(int argc, char** argv) {
 	std::string target_chr;
 	std::string sample_geno_path;
 
-	bool full_hi = false;
+	bool unweighted_hi = false;
+	bool pos_is_start = false;
 	double min_abs_r = 0;
 	bool intra = false;
 	int max_dist = -1;
@@ -102,8 +104,11 @@ int main(int argc, char** argv) {
 		} else if (a == "--hi" && i + 1 < argc) {
 			hi_path = argv[++i];
 
-		} else if (a == "--full-hi") {
-			full_hi = true;
+		} else if (a == "--unweighted-hi") {
+			unweighted_hi = true;
+
+		} else if (a == "--pos-is-start") {
+			pos_is_start = true;
 
 		} else if (a == "--block-size" && i + 1 < argc) {
 			block_size = std::stoi(argv[++i]);
@@ -180,7 +185,7 @@ int main(int argc, char** argv) {
 
 	// ---- Check sample geno mode ----
 	bool sample_geno_mode = !sample_geno_path.empty();
-		if (sample_geno_mode && intra) {
+	if (sample_geno_mode && intra) {
 		std::cout << "Note: --intra ignored in --sample-geno mode\n";
 	}
 	if (sample_geno_mode && has_target) {
@@ -199,8 +204,12 @@ int main(int argc, char** argv) {
 	Eigen::MatrixXf X_full = X;
 
 	std::vector<std::string> chroms = wm.meta.chrom;
-	std::vector<int> starts = wm.meta.start;
-	std::vector<int> ends = wm.meta.end;
+	std::vector<int> pos = wm.meta.pos;
+
+	// copies for hi (must be defined BEFORE any filtering)
+	std::vector<std::string> chroms_full = chroms;
+	std::vector<int> pos_full = pos;
+
 	int nwin = (int)chroms.size();
 
 	// ---- Optional filters (chr / bed) applied BEFORE residualization ----
@@ -225,7 +234,7 @@ int main(int argc, char** argv) {
 
 	for (int w = 0; w < nwin; ++w) {
 		const std::string& chr = chroms[w];
-		int pos = ends[w];
+		int p = pos[w];
 
 		if (!keep_chrs.empty()) {
 			if (chr_keep_map.find(chr) == chr_keep_map.end())
@@ -233,7 +242,7 @@ int main(int argc, char** argv) {
 		}
 
 		if (use_bed) {
-			if (!bed_contains(bed_by_chr, chr, pos))
+			if (!bed_contains(bed_by_chr, chr, p))
 				continue;
 		}
 
@@ -254,21 +263,18 @@ int main(int argc, char** argv) {
 
 		Eigen::MatrixXf Xf(nsamples, nwin2);
 		std::vector<std::string> chroms_f((size_t)nwin2);
-		std::vector<int> starts_f((size_t)nwin2);
-		std::vector<int> ends_f((size_t)nwin2);
+		std::vector<int> pos_f((size_t)nwin2);
 
 		for (int j = 0; j < nwin2; ++j) {
 			int w = keep_idx[j];
 			Xf.col(j) = X.col(w);
 			chroms_f[j] = chroms[w];
-			starts_f[j] = starts[w];
-			ends_f[j] = ends[w];
+			pos_f[j] =pos[w];
 		}
 
 		X.swap(Xf);
 		chroms.swap(chroms_f);
-		starts.swap(starts_f);
-		ends.swap(ends_f);
+		pos.swap(pos_f);
 		nwin = nwin2;
 	}
 
@@ -295,29 +301,36 @@ int main(int argc, char** argv) {
 	for (auto& kv : windows_by_chr) {
 		auto& idx = kv.second;
 		std::sort(idx.begin(), idx.end(),
-			[&](int a, int b) { return ends[a] < ends[b]; }
+		[&](int a, int b) { return pos[a] < pos[b]; }
 		);
 	}
 
 	// ---- Compute / load hybrid index ----
 	Eigen::VectorXf h;
 
-	if (full_hi && !hi_path.empty()) {
-		std::cerr << "Warning: --full-hi ignored because --hi FILE was provided\n";
-	}
-
 	if (!hi_path.empty()) {
 		std::cout << "Using HI from file: " << hi_path << "\n";
 		if (!load_hi_tsv(hi_path, wm.sample_names, h))
 			return 1;
-	} else if (full_hi) {
-		std::cout << "Computing HI from FULL VCF (pre-filter)\n";
-		h = compute_hi_from_X(X_full);
 	} else {
-		std::cout << "Computing HI from FILTERED windows (if filters such as --chr or --bed are used)\n";
-		h = compute_hi_from_X(X);
+		std::cout << "Computing HI from FULL VCF (always; independent of --chr/--bed)\n";
+
+		if (unweighted_hi) {
+			h = compute_hi_from_X(X_full);
+		} else {
+			h = compute_hi_from_X_weighted(
+				X_full,
+				chroms_full,
+				pos_full,
+				pos_is_start
+			);
+		}
 	}
 
+	std::cout << "HI mode: "
+			<< (unweighted_hi ? "unweighted" : "weighted")
+			<< (unweighted_hi ? "" : (pos_is_start ? " (pos=start)" : " (pos=end)"))
+			<< "\n";
 
 	// Always write the HI we used (computed or loaded)
 	std::string hi_out_path = out + ".hi.tsv";
@@ -368,7 +381,7 @@ int main(int argc, char** argv) {
 		}
 
 		for (int w = 0; w < nwin; ++w) {
-			if (chroms[w] == target_chr && ends[w] == target_pos) {
+			if (chroms[w] == target_chr && pos[w] == target_pos) {
 				target_w = w;
 				break;
 			}
@@ -570,7 +583,7 @@ int main(int argc, char** argv) {
 
 		if (!scan_vector_vs_windows_write_hits(
 			Z, gZ,
-			chroms, ends,
+			chroms, pos,
 			windows_by_chr, chr_order,
 			opt,
 			out_path,
@@ -607,14 +620,14 @@ int main(int argc, char** argv) {
 
 	if (target_w >= 0) {
 		if (!scan_target_write_hits(
-			Z, chroms, ends, windows_by_chr, chr_order,
+			Z, chroms, pos, windows_by_chr, chr_order,
 			opt, target_w, out_path, tested, kept,
 			distrib_path, distrib_sample, seed
 		))
 			return 1;
 	} else {
 		if (!scan_blocks_write_hits(
-			Z, chroms, ends, windows_by_chr, chr_order,
+			Z, chroms, pos, windows_by_chr, chr_order,
 			opt, out_path, tested, kept,
 			distrib_path, distrib_sample, seed
 		))
