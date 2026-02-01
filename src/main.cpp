@@ -51,7 +51,7 @@ static void usage() {
 		<< "  --compute-hi           Compute HI using FILTERED blocks only, write out.hi.tsv, and exit (no scans)\n"
 		<< "  --unweighted-hi        Use unweighted HI (mean(dosage)/2; legacy behavior)\n"
 		<< "  --pos-is-start         For weighted HI: interpret VCF block pos as START (default assumes END)\n"
-		<< "  --block-size INT       Block size for processing (default: 1024)\n"
+		<< "  --tile-size INT       tile size for processing (default: 1024)\n"
 		<< "  --threads INT          Number of OpenMP threads for scan steps (default: 1)\n"
 		<< "  --distrib              Write empirical scan distribution summary\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distrib summary (default: 200000)\n"
@@ -93,7 +93,7 @@ struct CliOptions {
 	int max_windows = -1;	// <=0 means loader default cap
 	double min_callrate = 1.0;	// fraction in [0,1]
 
-	int block_size = ADFINDER_DEFAULT_BLOCK_SIZE;
+	int tile_size = ADFINDER_DEFAULT_TILE_SIZE;
 	int threads = 1;
 
 	bool distrib = false;
@@ -154,8 +154,8 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--pos-is-start") {
 			opt.pos_is_start = true;
 
-		} else if (a == "--block-size" && i + 1 < argc) {
-			opt.block_size = std::stoi(argv[++i]);
+		} else if (a == "--tile-size" && i + 1 < argc) {
+			opt.tile_size = std::stoi(argv[++i]);
 
 		} else if (a == "--threads" && i + 1 < argc) {
 			opt.threads = std::stoi(argv[++i]);
@@ -859,7 +859,7 @@ int main(int argc, char** argv) {
 	ScanOptions popt;
 	popt.intra = cli.intra;
 	popt.max_dist = cli.max_dist;
-	popt.block_size = cli.block_size;
+	popt.tile_size = cli.tile_size;
 	popt.nsamples = nsamples;
 	popt.threads = cli.threads;
 	popt.min_abs_r = (float)cli.min_abs_r;
@@ -975,7 +975,7 @@ int main(int argc, char** argv) {
 	ScanOptions opt;
 	opt.intra = cli.intra;
 	opt.max_dist = cli.max_dist;
-	opt.block_size = cli.block_size;
+	opt.tile_size = cli.tile_size;
 	opt.nsamples = nsamples;
 	opt.threads = cli.threads;
 	opt.min_abs_r = (float)cli.min_abs_r;
@@ -1059,7 +1059,7 @@ int main(int argc, char** argv) {
 	long long kept = 0;
 
 	std::cout << "Scan mode: " << (cli.intra ? "intrachromosomal" : "interchromosomal") << "\n";
-	std::cout << "Block size: " << cli.block_size << "\n";
+	std::cout << "Block size: " << cli.tile_size << "\n";
 
 	if (cli.hi_mode == "global") {
 		if (target_w >= 0) {

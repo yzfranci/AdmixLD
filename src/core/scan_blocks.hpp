@@ -9,7 +9,7 @@
 struct ScanOptions {
 	bool intra = false;
 	int max_dist = -1;
-	int block_size = 1024;
+	int tile_size = 1024;
 
 	// legacy symmetric filter
 	float min_abs_r = 0.0f;

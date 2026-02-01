@@ -121,7 +121,7 @@ bool scan_blocks_write_hits_excl_focus(
 	uint64_t distrib_seed
 ) {
 	const int nsamples = opt.nsamples;
-	const int block_size = opt.block_size;
+	const int tile_size = opt.tile_size;
 
 	tested_pairs = 0;
 	kept_pairs = 0;
@@ -179,18 +179,18 @@ bool scan_blocks_write_hits_excl_focus(
 			return;
 		}
 
-		Eigen::MatrixXf A(nsamples, block_size);
-		Eigen::MatrixXf B(nsamples, block_size);
-		Eigen::MatrixXf R(block_size, block_size);
+		Eigen::MatrixXf A(nsamples, tile_size);
+		Eigen::MatrixXf B(nsamples, tile_size);
+		Eigen::MatrixXf R(tile_size, tile_size);
 
-		for (int i0 = 0; i0 < m; i0 += block_size) {
-			const int b1 = std::min(block_size, m - i0);
+		for (int i0 = 0; i0 < m; i0 += tile_size) {
+			const int b1 = std::min(tile_size, m - i0);
 
 			for (int k = 0; k < b1; ++k)
 				A.col(k) = Zc.col(i0 + k);
 
-			for (int j0 = i0; j0 < m; j0 += block_size) {
-				const int b2 = std::min(block_size, m - j0);
+			for (int j0 = i0; j0 < m; j0 += tile_size) {
+				const int b2 = std::min(tile_size, m - j0);
 
 				for (int k = 0; k < b2; ++k)
 					B.col(k) = Zc.col(j0 + k);
@@ -271,18 +271,18 @@ bool scan_blocks_write_hits_excl_focus(
 			return;
 		}
 
-		Eigen::MatrixXf A(nsamples, block_size);
-		Eigen::MatrixXf B(nsamples, block_size);
-		Eigen::MatrixXf R(block_size, block_size);
+		Eigen::MatrixXf A(nsamples, tile_size);
+		Eigen::MatrixXf B(nsamples, tile_size);
+		Eigen::MatrixXf R(tile_size, tile_size);
 
-		for (int i0 = 0; i0 < m1; i0 += block_size) {
-			const int b1 = std::min(block_size, m1 - i0);
+		for (int i0 = 0; i0 < m1; i0 += tile_size) {
+			const int b1 = std::min(tile_size, m1 - i0);
 
 			for (int k = 0; k < b1; ++k)
 				A.col(k) = Z1.col(i0 + k);
 
-			for (int j0 = 0; j0 < m2; j0 += block_size) {
-				const int b2 = std::min(block_size, m2 - j0);
+			for (int j0 = 0; j0 < m2; j0 += tile_size) {
+				const int b2 = std::min(tile_size, m2 - j0);
 
 				for (int k = 0; k < b2; ++k)
 					B.col(k) = Z2.col(j0 + k);
@@ -460,7 +460,7 @@ bool scan_target_write_hits_excl_focus(
 		distrib_sample = 200000;
 
 	const int nsamples = opt.nsamples;
-	const int block_size = opt.block_size;
+	const int tile_size = opt.tile_size;
 	const float denom = 1.0f / (float)(nsamples - 1);
 
 	tested_pairs = 0;
@@ -582,8 +582,8 @@ bool scan_target_write_hits_excl_focus(
 
 			v = Zc.col(j_target);
 
-			Eigen::MatrixXf B(nsamples, block_size);
-			Eigen::RowVectorXf R(block_size);
+			Eigen::MatrixXf B(nsamples, tile_size);
+			Eigen::RowVectorXf R(tile_size);
 
 			long long tested_local = 0;
 			long long kept_local = 0;
@@ -609,8 +609,8 @@ bool scan_target_write_hits_excl_focus(
 				}
 			};
 
-			for (int j0 = 0; j0 < m; j0 += block_size) {
-				const int b2 = std::min(block_size, m - j0);
+			for (int j0 = 0; j0 < m; j0 += tile_size) {
+				const int b2 = std::min(tile_size, m - j0);
 
 				for (int k = 0; k < b2; ++k)
 					B.col(k) = Zc.col(j0 + k);
@@ -659,8 +659,8 @@ bool scan_target_write_hits_excl_focus(
 			int n_valid_b = 0;
 			Eigen::MatrixXf Zb = residualize_and_zscore_subset(X_scan, h, idx, n_valid_b);
 
-			Eigen::MatrixXf B(nsamples, block_size);
-			Eigen::RowVectorXf R(block_size);
+			Eigen::MatrixXf B(nsamples, tile_size);
+			Eigen::RowVectorXf R(tile_size);
 
 			long long tested_local = 0;
 			long long kept_local = 0;
@@ -686,8 +686,8 @@ bool scan_target_write_hits_excl_focus(
 				}
 			};
 
-			for (int j0 = 0; j0 < m; j0 += block_size) {
-				const int b2 = std::min(block_size, m - j0);
+			for (int j0 = 0; j0 < m; j0 += tile_size) {
+				const int b2 = std::min(tile_size, m - j0);
 
 				for (int k = 0; k < b2; ++k)
 					B.col(k) = Zb.col(j0 + k);
@@ -1122,7 +1122,7 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 		sample_size = 200000;
 
 	const int nsamples = opt.nsamples;
-	const int block_size = opt.block_size;
+	const int tile_size = opt.tile_size;
 	const float denom = 1.0f / (float)(nsamples - 1);
 
 	summaries_out.clear();
@@ -1169,9 +1169,9 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 		sample.reserve((size_t)sample_size);
 		long long seen = 0;
 
-		Eigen::MatrixXf A(nsamples, block_size);
-		Eigen::MatrixXf B(nsamples, block_size);
-		Eigen::MatrixXf R(block_size, block_size);
+		Eigen::MatrixXf A(nsamples, tile_size);
+		Eigen::MatrixXf B(nsamples, tile_size);
+		Eigen::MatrixXf R(tile_size, tile_size);
 
 		const int C = (int)chr_order_scan.size();
 		for (int c1 = 0; c1 < C; ++c1) {
@@ -1198,8 +1198,8 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 				Eigen::MatrixXf Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1);
 				Eigen::MatrixXf Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2);
 
-				for (int i0 = 0; i0 < m1; i0 += block_size) {
-					int b1 = std::min(block_size, m1 - i0);
+				for (int i0 = 0; i0 < m1; i0 += tile_size) {
+					int b1 = std::min(tile_size, m1 - i0);
 
 					for (int k = 0; k < b1; ++k) {
 						int jcol = i0 + k;
@@ -1207,8 +1207,8 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 							A(i, k) = Z1(p1[i], jcol);
 					}
 
-					for (int j0 = 0; j0 < m2; j0 += block_size) {
-						int b2 = std::min(block_size, m2 - j0);
+					for (int j0 = 0; j0 < m2; j0 += tile_size) {
+						int b2 = std::min(tile_size, m2 - j0);
 
 						for (int k = 0; k < b2; ++k) {
 							int jcol = j0 + k;

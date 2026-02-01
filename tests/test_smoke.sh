@@ -10,7 +10,7 @@ $BIN \
 	--vcf "$VCF" \
 	--out "$OUT/test" \
 	--max-windows 200 \
-	--block-size 64 \
+	--tile-size 64 \
 	--intra \
 	--min-abs-r 0.2 \
 	--unweighted-hi \
@@ -41,7 +41,7 @@ $BIN \
 	--out "$OUT/test" \
 	--max-windows 200 \
 	--intra \
-	--block-size 64 \
+	--tile-size 64 \
 	--min-abs-r 0.3 \
 	> "$OUT/log.txt"
 
@@ -69,7 +69,7 @@ $BIN \
 	--vcf "$VCF" \
 	--out "$OUT/test" \
 	--max-windows 8000 \
-	--block-size 64 \
+	--tile-size 64 \
 	--threads 2 \
 	--min-abs-r 0.3 \
 	> "$OUT/log.txt"

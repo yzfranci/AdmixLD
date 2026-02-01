@@ -70,11 +70,11 @@ bool scan_blocks_write_hits(
 	uint64_t distrib_seed
 ) {
 	const int nsamples = opt.nsamples;
-	const int block_size = opt.block_size;
+	const int tile_size = opt.tile_size;
 
 	std::cout << "[scan] intra=" << (opt.intra ? 1 : 0)
 		  << " max_dist=" << opt.max_dist
-		  << " block_size=" << opt.block_size
+		  << " tile_size=" << opt.tile_size
 		  << "\n";
 
 	tested_pairs = 0;
@@ -160,9 +160,9 @@ bool scan_blocks_write_hits(
 				continue;
 			}
 
-			Eigen::MatrixXf A(nsamples, block_size);
-			Eigen::MatrixXf B(nsamples, block_size);
-			Eigen::MatrixXf R(block_size, block_size);
+			Eigen::MatrixXf A(nsamples, tile_size);
+			Eigen::MatrixXf B(nsamples, tile_size);
+			Eigen::MatrixXf R(tile_size, tile_size);
 
 			long long tested_local = 0;
 			long long kept_local = 0;
@@ -188,14 +188,14 @@ bool scan_blocks_write_hits(
 				}
 			};
 
-			for (int i0 = 0; i0 < m; i0 += block_size) {
-				const int b1 = std::min(block_size, m - i0);
+			for (int i0 = 0; i0 < m; i0 += tile_size) {
+				const int b1 = std::min(tile_size, m - i0);
 
 				for (int k = 0; k < b1; ++k)
 					A.col(k) = Z.col(idx[i0 + k]);
 
-				for (int j0 = i0; j0 < m; j0 += block_size) {
-					const int b2 = std::min(block_size, m - j0);
+				for (int j0 = i0; j0 < m; j0 += tile_size) {
+					const int b2 = std::min(tile_size, m - j0);
 
 					for (int k = 0; k < b2; ++k)
 						B.col(k) = Z.col(idx[j0 + k]);
@@ -291,9 +291,9 @@ bool scan_blocks_write_hits(
 				continue;
 			}
 
-			Eigen::MatrixXf A(nsamples, block_size);
-			Eigen::MatrixXf B(nsamples, block_size);
-			Eigen::MatrixXf R(block_size, block_size);
+			Eigen::MatrixXf A(nsamples, tile_size);
+			Eigen::MatrixXf B(nsamples, tile_size);
+			Eigen::MatrixXf R(tile_size, tile_size);
 
 			long long tested_local = 0;
 			long long kept_local = 0;
@@ -319,14 +319,14 @@ bool scan_blocks_write_hits(
 				}
 			};
 
-			for (int i0 = 0; i0 < m1; i0 += block_size) {
-				const int b1 = std::min(block_size, m1 - i0);
+			for (int i0 = 0; i0 < m1; i0 += tile_size) {
+				const int b1 = std::min(tile_size, m1 - i0);
 
 				for (int k = 0; k < b1; ++k)
 					A.col(k) = Z.col(idx1[i0 + k]);
 
-				for (int j0 = 0; j0 < m2; j0 += block_size) {
-					const int b2 = std::min(block_size, m2 - j0);
+				for (int j0 = 0; j0 < m2; j0 += tile_size) {
+					const int b2 = std::min(tile_size, m2 - j0);
 
 					for (int k = 0; k < b2; ++k)
 						B.col(k) = Z.col(idx2[j0 + k]);
@@ -475,7 +475,7 @@ bool scan_target_write_hits(
 		distrib_sample = 200000;
 
 	const int nsamples = opt.nsamples;
-	const int block_size = opt.block_size;
+	const int tile_size = opt.tile_size;
 	const float denom = 1.0f / (float)(nsamples - 1);
 
 	tested_pairs = 0;
@@ -560,8 +560,8 @@ bool scan_target_write_hits(
 			continue;
 		}
 
-		Eigen::MatrixXf B(nsamples, block_size);
-		Eigen::RowVectorXf R(block_size);
+		Eigen::MatrixXf B(nsamples, tile_size);
+		Eigen::RowVectorXf R(tile_size);
 
 		long long tested_local = 0;
 		long long kept_local = 0;
@@ -587,8 +587,8 @@ bool scan_target_write_hits(
 			}
 		};
 
-		for (int j0 = 0; j0 < m; j0 += block_size) {
-			const int b2 = std::min(block_size, m - j0);
+		for (int j0 = 0; j0 < m; j0 += tile_size) {
+			const int b2 = std::min(tile_size, m - j0);
 
 			for (int k = 0; k < b2; ++k)
 				B.col(k) = Z.col(idx[j0 + k]);
@@ -741,14 +741,14 @@ bool permute_interchrom_summary_chrblock(
 		sample_size = 200000;
 
 	int nsamples = opt.nsamples;
-	int block_size = opt.block_size;
+	int tile_size = opt.tile_size;
 
 	summaries_out.clear();
 	summaries_out.resize((size_t)n_perm);
 
-	Eigen::MatrixXf A(nsamples, block_size);
-	Eigen::MatrixXf B(nsamples, block_size);
-	Eigen::MatrixXf R(block_size, block_size);
+	Eigen::MatrixXf A(nsamples, tile_size);
+	Eigen::MatrixXf B(nsamples, tile_size);
+	Eigen::MatrixXf R(tile_size, tile_size);
 
 	const float denom = 1.0f / (float)(nsamples - 1);
 
@@ -781,9 +781,9 @@ bool permute_interchrom_summary_chrblock(
 		std::mt19937_64 rng(seed + (uint64_t)rep);
 
 		// Thread-local buffers (avoid races)
-		Eigen::MatrixXf A(nsamples, block_size);
-		Eigen::MatrixXf B(nsamples, block_size);
-		Eigen::MatrixXf R(block_size, block_size);
+		Eigen::MatrixXf A(nsamples, tile_size);
+		Eigen::MatrixXf B(nsamples, tile_size);
+		Eigen::MatrixXf R(tile_size, tile_size);
 
 		// Base vector + perm maps (thread-local)
 		std::vector<int> base(nsamples);
@@ -822,8 +822,8 @@ bool permute_interchrom_summary_chrblock(
 				const auto& p2 = perm_by_chr.at(chr2);
 				int m2 = (int)idx2.size();
 
-				for (int i0 = 0; i0 < m1; i0 += block_size) {
-					int b1 = std::min(block_size, m1 - i0);
+				for (int i0 = 0; i0 < m1; i0 += tile_size) {
+					int b1 = std::min(tile_size, m1 - i0);
 
 					for (int k = 0; k < b1; ++k) {
 						int w = idx1[i0 + k];
@@ -831,8 +831,8 @@ bool permute_interchrom_summary_chrblock(
 							A(i, k) = Z(p1[i], w);
 					}
 
-					for (int j0 = 0; j0 < m2; j0 += block_size) {
-						int b2 = std::min(block_size, m2 - j0);
+					for (int j0 = 0; j0 < m2; j0 += tile_size) {
+						int b2 = std::min(tile_size, m2 - j0);
 
 						for (int k = 0; k < b2; ++k) {
 							int w = idx2[j0 + k];
