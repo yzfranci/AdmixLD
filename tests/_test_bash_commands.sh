@@ -89,3 +89,12 @@
 	--no-chr scaffold-ma4 \
 	--no-chr scaffold-ma3 \
 	--compute-hi
+
+./build/adfinder \
+	--vcf tests/data/orioles_HZ_multisys.master.vcf.2025.02.11.vcf.gz \
+	--out test_missing \
+	--max-windows 1000 \
+	--intra \
+	--min-callrate 0.9 \
+	--min-abs-r 0.4 \
+	--block-size 1024

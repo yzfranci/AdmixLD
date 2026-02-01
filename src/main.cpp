@@ -44,7 +44,8 @@ static void usage() {
 		<< "  --min-pos-r FLOAT      Keep pairs with r >= value (asymmetric)\n"
 		<< "  --intra                Scan intrachromosomal pairs (default: interchrom only)\n"
 		<< "  --max-dist INT         Intra only: max end-distance (bp) between block pairs\n"
-		<< "  --max-windows N        Load at most N blocks (flag name kept for compatibility)\n"
+		<< "  --max-windows N        Load at most N blocks (used solely for test runs and debugging)\n"
+		<< "  --min-callrate FLOAT   Minimum block call rate; values <1.0 enable within-block mean imputation.\n"
 		<< "  --hi FILE              User provided hybrid index file (TSV: sample<TAB>hi; global HI only)\n"
 		<< "  --hi-mode STR          HI correction: global (default) | excl-focus (LOCO/LOCO2)\n"
 		<< "  --compute-hi           Compute HI using FILTERED blocks only, write out.hi.tsv, and exit (no scans)\n"
@@ -87,10 +88,10 @@ struct CliOptions {
 	bool unweighted_hi = false;
 	bool pos_is_start = false;
 
-	double min_abs_r = 0.0;
 	bool intra = false;
 	int max_dist = -1;
 	int max_windows = -1;	// <=0 means loader default cap
+	double min_callrate = 1.0;	// fraction in [0,1]
 
 	int block_size = ADFINDER_DEFAULT_BLOCK_SIZE;
 	int threads = 1;
@@ -102,6 +103,7 @@ struct CliOptions {
 	int perm_sample = 200000;
 	uint64_t seed = 1;
 
+	double min_abs_r = 0.0;
 	bool has_min_neg_r = false;
 	bool has_min_pos_r = false;
 	float min_neg_r = 0.0f;
@@ -133,6 +135,9 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 
 		} else if (a == "--max-windows" && i + 1 < argc) {
 			opt.max_windows = std::stoi(argv[++i]);
+
+		} else if (a == "--min-callrate" && i + 1 < argc) {
+			opt.min_callrate = std::stod(argv[++i]);
 
 		} else if (a == "--hi" && i + 1 < argc) {
 			opt.hi_path = argv[++i];
@@ -244,6 +249,11 @@ static int validate_options(const CliOptions& opt) {
 			std::cerr << "Error: --target-chr and --target-pos must both be provided.\n";
 			return 2;
 		}
+	}
+
+	if (opt.min_callrate < 0.0 || opt.min_callrate > 1.0) {
+		std::cerr << "Error: --min-callrate must be in [0,1]\n";
+		return 2;
 	}
 
 	return 0;
@@ -367,6 +377,104 @@ static bool apply_block_filters(
 	pos.swap(pos_f);
 
 	return true;
+}
+
+static bool apply_callrate_filter(
+	Eigen::MatrixXf& X,
+	std::vector<std::string>& chroms,
+	std::vector<int>& pos,
+	const std::vector<std::string>& sample_names,
+	double min_callrate
+) {
+	const int nsamples = (int)sample_names.size();
+	int nblocks = (int)chroms.size();
+
+	if (nblocks == 0)
+		return true;
+
+	// Default is 1.0, which matches current strict behavior.
+	// If set < 1.0, we keep blocks called in at least that fraction of samples.
+	if (min_callrate >= 1.0)
+		return true;
+
+	const int min_called = (int)std::ceil(min_callrate * (double)nsamples);
+
+	std::vector<int> keep_idx;
+	keep_idx.reserve((size_t)nblocks);
+
+	for (int w = 0; w < nblocks; ++w) {
+		int called = 0;
+		for (int i = 0; i < nsamples; ++i) {
+			float v = X(i, w);
+			if (!std::isnan(v))
+				++called;
+		}
+
+		if (called >= min_called)
+			keep_idx.push_back(w);
+	}
+
+	if (keep_idx.empty()) {
+		std::cerr << "Error: no blocks remain after --min-callrate filtering.\n";
+		return false;
+	}
+
+	if ((int)keep_idx.size() == nblocks) {
+		std::cout << "Call-rate filter: kept all blocks (min_callrate=" << min_callrate << ")\n";
+		return true;
+	}
+
+	std::cout << "Call-rate filter (--min-callrate):\n";
+	std::cout << "  min_callrate = " << min_callrate << "\n";
+	std::cout << "  min_called   = " << min_called << " / " << nsamples << "\n";
+	std::cout << "  before       = " << nblocks << "\n";
+	std::cout << "  after        = " << (int)keep_idx.size() << "\n";
+
+	const int nblocks2 = (int)keep_idx.size();
+	Eigen::MatrixXf Xf(nsamples, nblocks2);
+	std::vector<std::string> chroms_f((size_t)nblocks2);
+	std::vector<int> pos_f((size_t)nblocks2);
+
+	for (int j = 0; j < nblocks2; ++j) {
+		int w = keep_idx[j];
+		Xf.col(j) = X.col(w);
+		chroms_f[j] = chroms[w];
+		pos_f[j] = pos[w];
+	}
+
+	X.swap(Xf);
+	chroms.swap(chroms_f);
+	pos.swap(pos_f);
+
+	return true;
+}
+
+static void mean_impute_missing_per_block(Eigen::MatrixXf& X) {
+	const int nsamples = (int)X.rows();
+	const int nblocks = (int)X.cols();
+
+	for (int w = 0; w < nblocks; ++w) {
+		double sum = 0.0;
+		int cnt = 0;
+
+		for (int i = 0; i < nsamples; ++i) {
+			float v = X(i, w);
+			if (!std::isnan(v)) {
+				sum += (double)v;
+				++cnt;
+			}
+		}
+
+		if (cnt == 0)
+			continue;
+
+		float mu = (float)(sum / (double)cnt);
+
+		for (int i = 0; i < nsamples; ++i) {
+			if (std::isnan(X(i, w)))
+				X(i, w) = mu;
+		}
+	}
 }
 
 static void build_blocks_by_chr_sorted(
@@ -639,9 +747,18 @@ int main(int argc, char** argv) {
 	std::vector<std::string> chroms_full = chroms;
 	std::vector<int> pos_full = pos;
 
-	// Stage 3: Apply optional block filters
+	// Stage 3a: Apply optional block filters
 	if (!apply_block_filters(X, chroms, pos, wm.sample_names, cli))
 		return 1;
+
+	// Stage 3b: Apply optional callrate filters
+	if (!apply_callrate_filter(X, chroms, pos, wm.sample_names, cli.min_callrate))
+		return 1;
+
+	if (cli.min_callrate < 1.0) {
+		std::cout << "Missing-data handling: mean-imputing within blocks (enabled by --min-callrate < 1.0)\n";
+		mean_impute_missing_per_block(X);
+	}
 
 	const int nblocks = (int)chroms.size();
 
