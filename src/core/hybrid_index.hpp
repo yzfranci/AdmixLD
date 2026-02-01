@@ -23,6 +23,33 @@ Eigen::VectorXf compute_hi_from_X_weighted(
 	bool pos_is_start
 );
 
+struct HiComponentsWeighted {
+	Eigen::VectorXf wsum_total;	// per sample: sum(v * L) over non-missing
+	Eigen::VectorXf wtot_total;	// per sample: sum(L) over non-missing
+
+	std::vector<std::string> chr_order;		// stable insertion order
+	std::vector<Eigen::VectorXf> wsum_chr;	// [c] per sample
+	std::vector<Eigen::VectorXf> wtot_chr;	// [c] per sample
+};
+
+// Build per-chromosome weighted components (for LOCO/LOCO2).
+// Uses the same block-length inference as compute_hi_from_X_weighted.
+HiComponentsWeighted build_hi_components_weighted(
+	const Eigen::MatrixXf& X,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	bool pos_is_start
+);
+
+// Compute weighted HI from components excluding none / one / two chromosomes.
+// If exclude_chrA is empty => exclude none.
+// If exclude_chrB is empty => exclude only A (if A provided).
+Eigen::VectorXf hi_from_components_weighted_excluding(
+	const HiComponentsWeighted& hc,
+	const std::string& exclude_chrA = "",
+	const std::string& exclude_chrB = ""
+);
+
 // Load hybrid index from TSV: sample<TAB>hi (header allowed). Requires all samples.
 bool load_hi_tsv(
 	const std::string& path,

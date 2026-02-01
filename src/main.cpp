@@ -18,6 +18,7 @@
 #include "core/hybrid_index.hpp"
 #include "core/residualize.hpp"
 #include "core/scan_blocks.hpp"
+#include "core/scan_dynamic_hi.hpp"
 #include "config.hpp"
 
 static void usage() {
@@ -31,17 +32,20 @@ static void usage() {
 		<< "  --intra            Scan intrachromosomal pairs (default: interchrom only)\n"
 		<< "  --max-dist INT     Intra only: max end-distance (bp) between window pairs\n"
 		<< "  --max-windows N    Load at most N windows (default cap if <=0)\n"
-		<< "  --hi FILE          User provided hybrid index file (TSV: sample<TAB>hi)\n"
+		<< "  --hi FILE          User provided hybrid index file (TSV: sample<TAB>hi; global hi only)\n"
+		<< "  --hi-mode STR        HI correction: global (default) | excl-focus (LOCO/LOCO2)\n"
+		<< "  --compute-hi          Compute HI using FILTERED windows only, write out.hi.tsv, and exit (no scans)\n"
 		<< "  --unweighted-hi     Use unweighted HI (mean(dosage)/2; legacy behavior)\n"
 		<< "  --pos-is-start   For weighted HI: interpret VCF window pos as START (default assumes END)\n"
 		<< "  --block-size INT   Block size for processing (default: 1024)\n"
 		<< "  --threads INT      Number of OpenMP threads for scan steps (default: 1)\n"
-		<< "  --distrib              Write empirical scan r distribution summary\n"
+		<< "  --distrib              Write empirical scan distribution summary\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distrib summary (default: 200000)\n"
 		<< "  --permute N            Run N interchrom chr-block permutations (summary stats)\n"
 		<< "  --permute-sample INT   Reservoir sample size for percentile estimates (default: 200000)\n"
 		<< "  --seed INT             RNG seed for permutations (default: 1)\n"
 		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
+		<< "  --no-chr STR           Exclude this chromosome (repeatable; opposite of --chr)\n"
 		<< "  --bed FILE             Keep windows whose pos is within BED intervals (chr start end; no header)\n"
 		<< "  --target-chr STR        Scan one target window/pos vs all others (target chromosome)\n"
 		<< "  --target-pos INT        Scan one target window/pos vs all others (target position; matches single pos column)\n"
@@ -53,12 +57,15 @@ int main(int argc, char** argv) {
 	std::string out;
 	std::string hi_path;
 	std::vector<std::string> keep_chrs;
+	std::vector<std::string> drop_chrs;
 	std::string bed_path;
 	std::string target_chr;
 	std::string sample_geno_path;
+	std::string hi_mode = "global";
 
 	bool unweighted_hi = false;
 	bool pos_is_start = false;
+	bool compute_hi_only = false;
 	double min_abs_r = 0;
 	bool intra = false;
 	int max_dist = -1;
@@ -106,6 +113,12 @@ int main(int argc, char** argv) {
 		} else if (a == "--hi" && i + 1 < argc) {
 			hi_path = argv[++i];
 
+		} else if (a == "--hi-mode" && i + 1 < argc) {
+			hi_mode = argv[++i];
+
+		} else if (a == "--compute-hi") {
+			compute_hi_only = true;
+
 		} else if (a == "--unweighted-hi") {
 			unweighted_hi = true;
 
@@ -135,6 +148,9 @@ int main(int argc, char** argv) {
 		
 		} else if (a == "--chr" && i + 1 < argc) {
 			keep_chrs.push_back(argv[++i]);
+
+		} else if (a == "--no-chr" && i + 1 < argc) {
+			drop_chrs.push_back(argv[++i]);
 
 		} else if (a == "--bed" && i + 1 < argc) {
 			bed_path = argv[++i];
@@ -170,6 +186,22 @@ int main(int argc, char** argv) {
 		usage();
 		return 2;
 	}
+
+	if (hi_mode != "global" && hi_mode != "excl-focus") {
+		std::cerr << "Error: --hi-mode must be global or excl-focus\n";
+		return 2;
+	}
+	std::cout << "HI correction mode: " << hi_mode << "\n";
+
+	if (compute_hi_only && !hi_path.empty()) {
+		std::cerr << "Error: --compute-hi computes HI from windows; do not combine with --hi\n";
+		return 2;
+	}
+	if (compute_hi_only && hi_mode != "global") {
+		std::cerr << "Error: --compute-hi only computes hybrid indices based on the vcf (after filters) and do not run any scans\n";
+		return 2;
+	}
+
 
 	if (threads < 1) {
 		std::cerr << "Error: --threads must be >= 1\n";
@@ -229,6 +261,12 @@ int main(int argc, char** argv) {
 		for (const auto& c : keep_chrs)
 			chr_keep_map[c] = true;
 	}
+	std::unordered_map<std::string, bool> chr_drop_map;
+	if (!drop_chrs.empty()) {
+		chr_drop_map.reserve(drop_chrs.size() * 2 + 1);
+		for (const auto& c : drop_chrs)
+			chr_drop_map[c] = true;
+	}
 
 	std::unordered_map<std::string, std::vector<BedInterval>> bed_by_chr;
 	bool use_bed = false;
@@ -246,17 +284,27 @@ int main(int argc, char** argv) {
 		const std::string& chr = chroms[w];
 		int p = pos[w];
 
+		// --chr: keep-only whitelist
 		if (!keep_chrs.empty()) {
 			if (chr_keep_map.find(chr) == chr_keep_map.end())
 				continue;
 		}
-
+		// --no-chr: explicit blacklist (always applied)
+		if (!drop_chrs.empty()) {
+			if (chr_drop_map.find(chr) != chr_drop_map.end())
+				continue;
+		}
 		if (use_bed) {
 			if (!bed_contains(bed_by_chr, chr, p))
 				continue;
 		}
-
 		keep_idx.push_back(w);
+	}
+
+	if (!drop_chrs.empty()) {
+		std::cout << "Excluded chromosomes:\n";
+		for (const auto& c : drop_chrs)
+			std::cout << "  - " << c << "\n";
 	}
 
 	if (keep_idx.empty()) {
@@ -315,7 +363,7 @@ int main(int argc, char** argv) {
 		);
 	}
 
-	// ---- Compute / load hybrid index ----
+	// ---- Compute / load hybrid index (always) ----
 	Eigen::VectorXf h;
 
 	if (!hi_path.empty()) {
@@ -323,19 +371,23 @@ int main(int argc, char** argv) {
 		if (!load_hi_tsv(hi_path, wm.sample_names, h))
 			return 1;
 	} else {
-		std::cout << "Computing HI from FULL VCF (always; independent of --chr/--bed)\n";
+		if (compute_hi_only)
+			std::cout << "Computing HI from FILTERED windows (--chr/--no-chr/--bed applied)\n";
+		else
+			std::cout << "Computing HI from FULL VCF (always; independent of --chr/--no-chr/--bed)\n";
 
 		if (unweighted_hi) {
-			h = compute_hi_from_X(X_full);
+			h = compute_hi_from_X(compute_hi_only ? X : X_full);
 		} else {
 			h = compute_hi_from_X_weighted(
-				X_full,
-				chroms_full,
-				pos_full,
+				compute_hi_only ? X : X_full,
+				compute_hi_only ? chroms : chroms_full,
+				compute_hi_only ? pos : pos_full,
 				pos_is_start
 			);
 		}
 	}
+
 
 	std::cout << "HI mode: "
 			<< (unweighted_hi ? "unweighted" : "weighted")
@@ -347,6 +399,32 @@ int main(int argc, char** argv) {
 	if (!write_hi_tsv(hi_out_path, wm.sample_names, h))
 		return 1;
 	std::cout << "Wrote HI to: " << hi_out_path << "\n";
+
+	// ---- If compute_hi_only, exit now ----
+	if (compute_hi_only) {
+		std::cout << "--compute-hi set: exiting after HI computation (no scans)\n";
+		return 0;
+	}
+
+
+	// ---- If using excl-focus, build full-genome HI components now ----
+	HiComponentsWeighted hc_full;
+	bool has_hc_full = false;
+
+	if (hi_mode == "excl-focus") {
+		if (unweighted_hi) {
+			std::cerr << "Error: --hi-mode excl-focus currently requires weighted HI (omit --unweighted-hi)\n";
+			return 2;
+		}
+
+		hc_full = build_hi_components_weighted(
+			X_full,
+			chroms_full,
+			pos_full,
+			pos_is_start
+		);
+		has_hc_full = true;
+	}
 
 
 	// Summary stats (ignore NaNs)
@@ -412,23 +490,30 @@ int main(int argc, char** argv) {
 	Eigen::VectorXf gZ;
 	int g_valid = 0;
 
-	if (sample_geno_mode) {
-		Eigen::VectorXf g;
+	Eigen::VectorXf g;
+	bool g_loaded = false;
 
+	if (sample_geno_mode) {
 		if (!load_sample_vector_tsv(sample_geno_path, wm.sample_names, g))
 			return 1;
+		g_loaded = true;
 
-		try {
-			gZ = residualize_and_zscore_vector(g, h, g_valid);
-		} catch (const std::exception& e) {
-			std::cerr << "Error: sample-geno residualization failed: "
-				<< e.what() << "\n";
-			return 1;
+		if (hi_mode == "global") {
+			try {
+				gZ = residualize_and_zscore_vector(g, h, g_valid);
+			} catch (const std::exception& e) {
+				std::cerr << "Error: sample-geno residualization failed: "
+					<< e.what() << "\n";
+				return 1;
+			}
+
+			std::cout << "Sample-geno residualization complete:\n";
+			std::cout << "  valid_samples = " << g_valid << " / " << nsamples << "\n";
+		} else {
+			std::cout << "Sample-geno loaded (excl-focus mode: residualize per chromosome during scan)\n";
 		}
-
-		std::cout << "Sample-geno residualization complete:\n";
-		std::cout << "  valid_samples = " << g_valid << " / " << nsamples << "\n";
 	}
+
 
 
 	// ---- Residualize each window on HI and z-score => Z (nsamples × nwin) ----
@@ -487,10 +572,37 @@ int main(int argc, char** argv) {
 		std::cout << "  seed        = " << seed << "\n";
 		std::cout << "  sample_size = " << perm_sample << "\n";
 
-		if (!permute_sample_vector_summary(
-			Z, gZ, popt, seed, n_perm, perm_sample, summ
-		))
-			return 1;
+		if (hi_mode == "global") {
+			if (!permute_sample_vector_summary(
+				Z, gZ, popt, seed, n_perm, perm_sample, summ
+			))
+				return 1;
+		} else {
+			if (!g_loaded) {
+				std::cerr << "Error: sample-geno vector was not loaded\n";
+				return 1;
+			}
+			if (!has_hc_full) {
+				std::cerr << "Error: HI components missing for excl-focus mode\n";
+				return 1;
+			}
+
+			if (!permute_sample_vector_summary_excl_focus(
+				X,
+				g,
+				chroms,
+				pos,
+				windows_by_chr,
+				chr_order,
+				hc_full,
+				popt,
+				seed,
+				n_perm,
+				perm_sample,
+				summ
+			))
+				return 1;
+		}
 
 		std::string perm_path = out + ".samplegeno.perm.summary.tsv";
 		std::ofstream pf(perm_path);
@@ -515,6 +627,7 @@ int main(int argc, char** argv) {
 	}
 
 
+
 	// ---- Permutation test ----
 	if (n_perm > 0) {
 		if (intra) {
@@ -522,19 +635,41 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 
-
-
 		std::vector<PermSummary> summ;
 
 		std::cout << "Permutation test (interchrom, chr-block):\n";
 		std::cout << "  n_perm         = " << n_perm << "\n";
 		std::cout << "  seed           = " << seed << "\n";
 		std::cout << "  perm_sample    = " << perm_sample << "\n";
-
 		std::cout << std::flush;
 
-		if (!permute_interchrom_summary_chrblock(Z, windows_by_chr, chr_order, popt, seed, n_perm, perm_sample, summ))
-			return 1;
+		if (hi_mode == "global") {
+			if (!permute_interchrom_summary_chrblock(
+				Z, windows_by_chr, chr_order,
+				popt,
+				seed, n_perm, perm_sample,
+				summ
+			))
+				return 1;
+		} else {
+			if (!has_hc_full) {
+				std::cerr << "Error: HI components missing for excl-focus mode\n";
+				return 1;
+			}
+
+			if (!permute_interchrom_summary_chrblock_excl_focus(
+				X,
+				chroms,
+				pos,
+				windows_by_chr,
+				chr_order,
+				hc_full,
+				popt,
+				seed, n_perm, perm_sample,
+				summ
+			))
+				return 1;
+		}
 
 		std::string perm_path = out + ".perm.summary.tsv";
 		std::ofstream pf(perm_path);
@@ -561,9 +696,7 @@ int main(int argc, char** argv) {
 		pf.close();
 
 		std::cout << "  wrote permutation summaries: " << perm_path << "\n";
-
-		// If permutations were requested, stop here (do not run hits scan)
-		std::cout << "Permutation-only mode (--permute was set). Skipping hits scan.\n";
+		std::cout << "Permutation mode (--permute was set). Skipping hits scan.\n";
 		return 0;
 	}
 
@@ -593,19 +726,50 @@ int main(int argc, char** argv) {
 
 		std::cout << "Scan mode: sample-geno vs all windows\n";
 
-		if (!scan_vector_vs_windows_write_hits(
-			Z, gZ,
-			chroms, pos,
-			windows_by_chr, chr_order,
-			opt,
-			out_path,
-			tested,
-			kept,
-			distrib_path,
-			distrib_sample,
-			seed
-		))
-			return 1;
+		if (hi_mode == "global") {
+			if (!scan_vector_vs_windows_write_hits(
+				Z, gZ,
+				chroms, pos,
+				windows_by_chr, chr_order,
+				opt,
+				out_path,
+				tested,
+				kept,
+				distrib_path,
+				distrib_sample,
+				seed
+			))
+				return 1;
+
+		} else {
+			// excl-focus: need raw g and full-genome HI components
+			if (!g_loaded) {
+				std::cerr << "Error: sample-geno vector was not loaded\n";
+				return 1;
+			}
+			if (!has_hc_full) {
+				std::cerr << "Error: HI components missing for excl-focus mode\n";
+				return 1;
+			}
+
+			if (!scan_vector_vs_windows_write_hits_excl_focus(
+				X,
+				g,
+				chroms,
+				pos,
+				windows_by_chr,
+				chr_order,
+				hc_full,
+				opt,
+				out_path,
+				tested,
+				kept,
+				distrib_path,
+				distrib_sample,
+				seed
+			))
+				return 1;
+		}
 
 		std::cout << "Sample-geno scan complete:\n";
 		std::cout << "  tested_pairs = " << tested << "\n";
@@ -616,6 +780,7 @@ int main(int argc, char** argv) {
 
 		return 0;  // <<< Override normal scan
 	}
+
 
 
 	// ---- Scan pairs using BLOCK matrix multiply ----
@@ -630,20 +795,61 @@ int main(int argc, char** argv) {
 	if (distrib)
 		distrib_path = out + ".scan.summary.tsv";
 
-	if (target_w >= 0) {
-		if (!scan_target_write_hits(
-			Z, chroms, pos, windows_by_chr, chr_order,
-			opt, target_w, out_path, tested, kept,
-			distrib_path, distrib_sample, seed
-		))
-			return 1;
+	if (hi_mode == "global") {
+		if (target_w >= 0) {
+			if (!scan_target_write_hits(
+				Z, chroms, pos, windows_by_chr, chr_order,
+				opt, target_w, out_path, tested, kept,
+				distrib_path, distrib_sample, seed
+			))
+				return 1;
+		} else {
+			if (!scan_blocks_write_hits(
+				Z, chroms, pos, windows_by_chr, chr_order,
+				opt, out_path, tested, kept,
+				distrib_path, distrib_sample, seed
+			))
+				return 1;
+		}
 	} else {
-		if (!scan_blocks_write_hits(
-			Z, chroms, pos, windows_by_chr, chr_order,
-			opt, out_path, tested, kept,
-			distrib_path, distrib_sample, seed
-		))
-			return 1;
+		// excl-focus
+		if (target_w >= 0) {
+			if (!scan_target_write_hits_excl_focus(
+					X,
+					chroms,
+					pos,
+					windows_by_chr,
+					chr_order,
+					hc_full,
+					opt,
+					target_w,
+					out_path,
+					tested,
+					kept,
+					distrib_path,
+					distrib_sample,
+					seed
+				)
+			)
+				return 1;
+		} else {
+			if (!scan_blocks_write_hits_excl_focus(
+					X,
+					chroms,
+					pos,
+					windows_by_chr,
+					chr_order,
+					hc_full,
+					opt,
+					out_path,
+					tested,
+					kept,
+					distrib_path,
+					distrib_sample,
+					seed
+				))
+				return 1;
+		}
 	}
 
 	std::cout << "Scan complete:\n";

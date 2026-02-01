@@ -23,6 +23,7 @@ add_executable(adfinder
 	src/core/hybrid_index.cpp
 	src/core/residualize.cpp
 	src/core/scan_blocks.cpp
+	src/core/scan_dynamic_hi.cpp
 )
 
 # HTSlib
