@@ -51,7 +51,7 @@ static void usage() {
 		<< "  --compute-hi           Compute HI using FILTERED blocks only, write out.hi.tsv, and exit (no scans)\n"
 		<< "  --unweighted-hi        Use unweighted HI (mean(dosage)/2; legacy behavior)\n"
 		<< "  --pos-is-start         For weighted HI: interpret VCF block pos as START (default assumes END)\n"
-		<< "  --tile-size INT       tile size for processing (default: 1024)\n"
+		<< "  --tile-size INT		 tile size for processing (default: 1024)\n"
 		<< "  --threads INT          Number of OpenMP threads for scan steps (default: 1)\n"
 		<< "  --distrib              Write empirical scan distribution summary\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distrib summary (default: 200000)\n"
