@@ -746,46 +746,33 @@ bool permute_interchrom_summary_chrblock(
 	summaries_out.clear();
 	summaries_out.resize((size_t)n_perm);
 
-	Eigen::MatrixXf A(nsamples, tile_size);
-	Eigen::MatrixXf B(nsamples, tile_size);
-	Eigen::MatrixXf R(tile_size, tile_size);
-
 	const float denom = 1.0f / (float)(nsamples - 1);
-
-	std::vector<int> base(nsamples);
-	for (int i = 0; i < nsamples; ++i)
-		base[i] = i;
-
-	std::unordered_map<std::string, std::vector<int>> perm_by_chr;
-	perm_by_chr.reserve(chr_order.size());
-	for (const auto& chr : chr_order)
-		perm_by_chr[chr] = std::vector<int>(nsamples);
-
-	summaries_out.clear();
-	summaries_out.resize((size_t)n_perm);
 
 	int nthreads = 1;
 	#ifdef ADFINDER_HAS_OPENMP
-	nthreads = omp_get_max_threads();
+		nthreads = opt.threads;
+		if (nthreads < 1)
+			nthreads = 1;
+		omp_set_dynamic(0);
+		omp_set_num_threads(nthreads);
 	#endif
 
 	std::cout << "Permutation test: " << n_perm << " replicates";
 	#ifdef ADFINDER_HAS_OPENMP
-	std::cout << " using " << nthreads << " threads";
+		std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
 
-	#pragma omp parallel for schedule(dynamic)
+	#ifdef ADFINDER_HAS_OPENMP
+	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
+	#endif
 	for (int rep = 0; rep < n_perm; ++rep) {
-		// Thread-local RNG
 		std::mt19937_64 rng(seed + (uint64_t)rep);
 
-		// Thread-local buffers (avoid races)
 		Eigen::MatrixXf A(nsamples, tile_size);
 		Eigen::MatrixXf B(nsamples, tile_size);
 		Eigen::MatrixXf R(tile_size, tile_size);
 
-		// Base vector + perm maps (thread-local)
 		std::vector<int> base(nsamples);
 		for (int i = 0; i < nsamples; ++i)
 			base[i] = i;
@@ -795,7 +782,6 @@ bool permute_interchrom_summary_chrblock(
 		for (const auto& chr : chr_order)
 			perm_by_chr[chr] = base;
 
-		// Build one permutation per chromosome (for this rep)
 		for (const auto& chr : chr_order) {
 			auto& perm = perm_by_chr[chr];
 			std::shuffle(perm.begin(), perm.end(), rng);
