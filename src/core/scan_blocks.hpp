@@ -41,7 +41,10 @@ struct ScanSummary {
 	float p95 = 0.0f;
 	float p99 = 0.0f;
 	float max_r = 0.0f;
+	float mean = 0.0f;
+	float sd = 0.0f;
 };
+
 
 bool scan_blocks_write_hits(
 	const Eigen::MatrixXf& Z,

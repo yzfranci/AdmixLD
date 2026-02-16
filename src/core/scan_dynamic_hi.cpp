@@ -105,6 +105,40 @@ static void merge_part_files(
 	}
 }
 
+static void compute_mean_sd_from_sample(
+	const std::vector<float>& v,
+	float& mean_out,
+	float& sd_out
+) {
+	mean_out = std::numeric_limits<float>::quiet_NaN();
+	sd_out = std::numeric_limits<float>::quiet_NaN();
+
+	long long n = 0;
+	double mu = 0.0;
+	double m2 = 0.0;
+
+	for (float x : v) {
+		if (!std::isfinite(x))
+			continue;
+
+		++n;
+		double dx = (double)x - mu;
+		mu += dx / (double)n;
+		double dx2 = (double)x - mu;
+		m2 += dx * dx2;
+	}
+
+	if (n <= 0)
+		return;
+
+	mean_out = (float)mu;
+	if (n > 1) {
+		double var = m2 / (double)(n - 1);
+		if (var < 0.0) var = 0.0;
+		sd_out = (float)std::sqrt(var);
+	}
+}
+
 bool scan_blocks_write_hits_excl_focus(
 	const Eigen::MatrixXf& X_scan,
 	const std::vector<std::string>& chroms_scan,
@@ -234,7 +268,6 @@ bool scan_blocks_write_hits_excl_focus(
 							continue;
 
 						++tested_t[(size_t)tid];
-
 						if (do_distrib)
 							consider_distrib(td[(size_t)tid], r, distrib_sample);
 
@@ -300,7 +333,6 @@ bool scan_blocks_write_hits_excl_focus(
 							continue;
 
 						++tested_t[(size_t)tid];
-
 						if (do_distrib)
 							consider_distrib(td[(size_t)tid], r, distrib_sample);
 
@@ -401,16 +433,20 @@ bool scan_blocks_write_hits_excl_focus(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
 				std::shuffle(dsample.begin(), dsample.end(), rng);
 				dsample.resize((size_t)distrib_sample);
 			}
+
+			float mean = std::numeric_limits<float>::quiet_NaN();
+			float sd = std::numeric_limits<float>::quiet_NaN();
+			compute_mean_sd_from_sample(dsample, mean, sd);
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -432,6 +468,8 @@ bool scan_blocks_write_hits_excl_focus(
 				<< "\t" << p05
 				<< "\t" << p01
 				<< "\t" << global_min
+				<< "\t" << mean
+				<< "\t" << sd
 				<< "\n";
 		}
 	}
@@ -490,14 +528,6 @@ bool scan_target_write_hits_excl_focus(
 	std::vector<long long> tested_t((size_t)nthreads, 0);
 	std::vector<long long> kept_t((size_t)nthreads, 0);
 
-	struct ThreadDistrib {
-		long long tested_pairs = 0;
-		float min_r = std::numeric_limits<float>::infinity();
-		float max_r = -std::numeric_limits<float>::infinity();
-		std::mt19937_64 rng;
-		std::vector<float> sample;
-	};
-
 	std::vector<ThreadDistrib> td;
 	if (do_distrib) {
 		td.resize((size_t)nthreads);
@@ -506,21 +536,6 @@ bool scan_target_write_hits_excl_focus(
 			td[(size_t)t].sample.reserve((size_t)distrib_sample);
 		}
 	}
-
-	auto keep_hit = [&](float r) -> bool {
-		if (!std::isfinite(r))
-			return false;
-
-		if (opt.use_asym) {
-			bool keep = false;
-			if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
-				keep = true;
-			if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
-				keep = true;
-			return keep;
-		}
-		return (std::fabs(r) >= opt.min_abs_r);
-	};
 
 	const int C = (int)chr_order_scan.size();
 
@@ -555,16 +570,19 @@ bool scan_target_write_hits_excl_focus(
 			continue;
 		}
 
+		const bool same_chr = (chr == tchr);
+
 		Eigen::VectorXf h;
-
-		bool same_chr = (chr == tchr);
-		if (same_chr) {
+		if (same_chr)
 			h = hi_from_components_weighted_excluding(hc_full, tchr);
-		} else {
+		else
 			h = hi_from_components_weighted_excluding(hc_full, tchr, chr);
-		}
 
-		Eigen::VectorXf v;
+		auto local_consider = [&](float r) {
+			if (!do_distrib)
+				return;
+			consider_distrib(td[(size_t)tid], r, distrib_sample);
+		};
 
 		if (same_chr) {
 			int n_valid = 0;
@@ -580,34 +598,13 @@ bool scan_target_write_hits_excl_focus(
 			if (j_target < 0)
 				continue;
 
-			v = Zc.col(j_target);
+			Eigen::VectorXf v = Zc.col(j_target);
 
 			Eigen::MatrixXf B(nsamples, tile_size);
 			Eigen::RowVectorXf R(tile_size);
 
 			long long tested_local = 0;
 			long long kept_local = 0;
-
-			auto consider_distrib = [&](float r) {
-				if (!do_distrib)
-					return;
-
-				auto& d = td[(size_t)tid];
-
-				if (r < d.min_r) d.min_r = r;
-				if (r > d.max_r) d.max_r = r;
-
-				++d.tested_pairs;
-
-				if ((int)d.sample.size() < distrib_sample) {
-					d.sample.push_back(r);
-				} else {
-					std::uniform_int_distribution<long long> U(0, d.tested_pairs - 1);
-					long long j2 = U(d.rng);
-					if (j2 < distrib_sample)
-						d.sample[(size_t)j2] = r;
-				}
-			};
 
 			for (int j0 = 0; j0 < m; j0 += tile_size) {
 				const int b2 = std::min(tile_size, m - j0);
@@ -632,11 +629,13 @@ bool scan_target_write_hits_excl_focus(
 					}
 
 					const float r = R(ib);
+					if (!std::isfinite(r))
+						continue;
 
 					++tested_local;
-					consider_distrib(r);
+					local_consider(r);
 
-					if (keep_hit(r)) {
+					if (keep_hit_r(r, opt)) {
 						ofp << target_w << "\t" << chroms_scan[target_w] << "\t" << pos_scan[target_w] << "\t"
 							<< b << "\t" << chroms_scan[b] << "\t" << pos_scan[b] << "\t"
 							<< r << "\t" << nsamples << "\n";
@@ -647,14 +646,13 @@ bool scan_target_write_hits_excl_focus(
 
 			tested_t[(size_t)tid] += tested_local;
 			kept_t[(size_t)tid] += kept_local;
-
 		} else {
 			std::vector<int> tvec(1);
 			tvec[0] = target_w;
 
 			int n_valid_t = 0;
 			Eigen::MatrixXf Zt = residualize_and_zscore_subset(X_scan, h, tvec, n_valid_t);
-			v = Zt.col(0);
+			Eigen::VectorXf v = Zt.col(0);
 
 			int n_valid_b = 0;
 			Eigen::MatrixXf Zb = residualize_and_zscore_subset(X_scan, h, idx, n_valid_b);
@@ -664,27 +662,6 @@ bool scan_target_write_hits_excl_focus(
 
 			long long tested_local = 0;
 			long long kept_local = 0;
-
-			auto consider_distrib = [&](float r) {
-				if (!do_distrib)
-					return;
-
-				auto& d = td[(size_t)tid];
-
-				if (r < d.min_r) d.min_r = r;
-				if (r > d.max_r) d.max_r = r;
-
-				++d.tested_pairs;
-
-				if ((int)d.sample.size() < distrib_sample) {
-					d.sample.push_back(r);
-				} else {
-					std::uniform_int_distribution<long long> U(0, d.tested_pairs - 1);
-					long long j2 = U(d.rng);
-					if (j2 < distrib_sample)
-						d.sample[(size_t)j2] = r;
-				}
-			};
 
 			for (int j0 = 0; j0 < m; j0 += tile_size) {
 				const int b2 = std::min(tile_size, m - j0);
@@ -699,11 +676,13 @@ bool scan_target_write_hits_excl_focus(
 					const int b = idx[j0 + ib];
 
 					const float r = R(ib);
+					if (!std::isfinite(r))
+						continue;
 
 					++tested_local;
-					consider_distrib(r);
+					local_consider(r);
 
-					if (keep_hit(r)) {
+					if (keep_hit_r(r, opt)) {
 						ofp << target_w << "\t" << chroms_scan[target_w] << "\t" << pos_scan[target_w] << "\t"
 							<< b << "\t" << chroms_scan[b] << "\t" << pos_scan[b] << "\t"
 							<< r << "\t" << nsamples << "\n";
@@ -752,7 +731,7 @@ bool scan_target_write_hits_excl_focus(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
 
 		long long total_tested = 0;
 		float global_min = std::numeric_limits<float>::infinity();
@@ -774,13 +753,17 @@ bool scan_target_write_hits_excl_focus(
 		}
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
 				std::shuffle(dsample.begin(), dsample.end(), rng);
 				dsample.resize((size_t)distrib_sample);
 			}
+
+			float mean = std::numeric_limits<float>::quiet_NaN();
+			float sd = std::numeric_limits<float>::quiet_NaN();
+			compute_mean_sd_from_sample(dsample, mean, sd);
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -802,6 +785,8 @@ bool scan_target_write_hits_excl_focus(
 				<< "\t" << p05
 				<< "\t" << p01
 				<< "\t" << global_min
+				<< "\t" << mean
+				<< "\t" << sd
 				<< "\n";
 		}
 	}
@@ -861,14 +846,6 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	std::vector<long long> tested_t((size_t)nthreads, 0);
 	std::vector<long long> kept_t((size_t)nthreads, 0);
 
-	struct ThreadDistrib {
-		long long tested_pairs = 0;
-		float min_r = std::numeric_limits<float>::infinity();
-		float max_r = -std::numeric_limits<float>::infinity();
-		std::mt19937_64 rng;
-		std::vector<float> sample;
-	};
-
 	std::vector<ThreadDistrib> td;
 	if (do_distrib) {
 		td.resize((size_t)nthreads);
@@ -877,42 +854,6 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 			td[(size_t)t].sample.reserve((size_t)distrib_sample);
 		}
 	}
-
-	auto keep_hit = [&](float r) -> bool {
-		if (!std::isfinite(r))
-			return false;
-
-		if (opt.use_asym) {
-			bool keep = false;
-			if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
-				keep = true;
-			if (opt.min_pos_r > 0.0f && r >= opt.min_pos_r)
-				keep = true;
-			return keep;
-		}
-		return (std::fabs(r) >= opt.min_abs_r);
-	};
-
-	auto consider_distrib = [&](int tid, float r) {
-		if (!do_distrib)
-			return;
-
-		auto& d = td[(size_t)tid];
-
-		if (r < d.min_r) d.min_r = r;
-		if (r > d.max_r) d.max_r = r;
-
-		++d.tested_pairs;
-
-		if ((int)d.sample.size() < distrib_sample) {
-			d.sample.push_back(r);
-		} else {
-			std::uniform_int_distribution<long long> U(0, d.tested_pairs - 1);
-			long long j = U(d.rng);
-			if (j < distrib_sample)
-				d.sample[(size_t)j] = r;
-		}
-	};
 
 	const int C = (int)chr_order_scan.size();
 
@@ -932,24 +873,21 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 		if (m == 0)
 			continue;
 
-		// LOCO HI excluding this chromosome
 		Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr);
 
-		// Residualize v_raw against h (and z-score)
 		int v_valid = 0;
 		Eigen::VectorXf vZ;
 		try {
 			vZ = residualize_and_zscore_vector(v_raw, h, v_valid);
-		} catch (const std::exception&) {
+		} catch (...) {
 			continue;
 		}
 
-		// Residualize windows on this chromosome against h (and z-score)
 		int n_valid = 0;
 		Eigen::MatrixXf Zc;
 		try {
 			Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid);
-		} catch (const std::exception&) {
+		} catch (...) {
 			continue;
 		}
 
@@ -967,7 +905,6 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 		long long tested_local = 0;
 		long long kept_local = 0;
 
-		// Compute one r per window in this chromosome
 		for (int j = 0; j < m; ++j) {
 			const int w = idx[j];
 
@@ -980,11 +917,14 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 			}
 
 			float r = (float)(dot * denom);
+			if (!std::isfinite(r))
+				continue;
 
 			++tested_local;
-			consider_distrib(tid, r);
+			if (do_distrib)
+				consider_distrib(td[(size_t)tid], r, distrib_sample);
 
-			if (keep_hit(r)) {
+			if (keep_hit_r(r, opt)) {
 				ofp << "sample_geno"
 					<< "\t" << w
 					<< "\t" << chroms_scan[w]
@@ -1005,7 +945,6 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 		kept_pairs += kept_t[(size_t)t];
 	}
 
-	// Merge part files
 	{
 		std::ofstream of(out_path);
 		if (!of) {
@@ -1029,7 +968,6 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(part_paths[(size_t)t].c_str());
 
-	// Distrib summary
 	if (do_distrib) {
 		long long total_tested = 0;
 		float global_min = std::numeric_limits<float>::infinity();
@@ -1056,16 +994,20 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
 				std::shuffle(dsample.begin(), dsample.end(), rng);
 				dsample.resize((size_t)distrib_sample);
 			}
+
+			float mean = std::numeric_limits<float>::quiet_NaN();
+			float sd = std::numeric_limits<float>::quiet_NaN();
+			compute_mean_sd_from_sample(dsample, mean, sd);
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -1087,6 +1029,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 				<< "\t" << p05
 				<< "\t" << p01
 				<< "\t" << global_min
+				<< "\t" << mean
+				<< "\t" << sd
 				<< "\n";
 		}
 	}
@@ -1173,13 +1117,9 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 		s.min_r = std::numeric_limits<float>::infinity();
 		s.max_r = -std::numeric_limits<float>::infinity();
 
-		// reservoir sample for quantiles + mean/sd
 		std::vector<float> sample;
 		sample.reserve((size_t)sample_size);
 		long long seen = 0;
-
-		// Welford mean/sd over the reservoir sample (after it is finalized)
-		// (we compute after sampling so mean/sd match the sample used for quantiles)
 
 		Eigen::MatrixXf A(nsamples, tile_size);
 		Eigen::MatrixXf B(nsamples, tile_size);
@@ -1200,10 +1140,8 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 				if (m2 == 0)
 					continue;
 
-				// LOCO2 HI for this chromosome pair (same as dynamic scan)
 				Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr1, chr2);
 
-				// Bin membership for this pair-specific HI
 				std::vector<std::vector<int>> bin_members((size_t)hi_bins);
 				for (int i = 0; i < nsamples; ++i) {
 					int b = hi_bin_index(h(i), hi_bins, 0.0f, 1.0f);
@@ -1211,14 +1149,11 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 						bin_members[(size_t)b].push_back(i);
 				}
 
-				// Residualize windows using LOCO2 HI
 				int n_valid1 = 0;
 				int n_valid2 = 0;
 				Eigen::MatrixXf Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1);
 				Eigen::MatrixXf Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2);
 
-				// Permutation within HI bins for each chromosome in the pair:
-				// pX[i] = source individual row used for output-row i
 				std::vector<int> p1(nsamples), p2(nsamples);
 				for (int i = 0; i < nsamples; ++i) {
 					p1[i] = i;
@@ -1232,20 +1167,15 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 
 					std::vector<int> shuf = members;
 					std::shuffle(shuf.begin(), shuf.end(), rng);
-
-					for (int k = 0; k < (int)members.size(); ++k) {
+					for (int k = 0; k < (int)members.size(); ++k)
 						p1[members[(size_t)k]] = shuf[(size_t)k];
-					}
 
-					// independent shuffle for chr2 (same bin partitions, different mapping)
 					shuf = members;
 					std::shuffle(shuf.begin(), shuf.end(), rng);
-					for (int k = 0; k < (int)members.size(); ++k) {
+					for (int k = 0; k < (int)members.size(); ++k)
 						p2[members[(size_t)k]] = shuf[(size_t)k];
-					}
 				}
 
-				// Circular shift per *source* individual, in rank space within each chromosome
 				std::vector<int> sh1(nsamples, 0), sh2(nsamples, 0);
 				if (m1 > 1) {
 					std::uniform_int_distribution<int> U(0, m1 - 1);
@@ -1262,7 +1192,7 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 					int b1 = std::min(tile_size, m1 - i0);
 
 					for (int k = 0; k < b1; ++k) {
-						int r1 = i0 + k;	// rank within chr1
+						int r1 = i0 + k;
 						for (int i = 0; i < nsamples; ++i) {
 							int src = p1[i];
 							int rr = r1;
@@ -1276,7 +1206,7 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 						int b2 = std::min(tile_size, m2 - j0);
 
 						for (int k = 0; k < b2; ++k) {
-							int r2 = j0 + k;	// rank within chr2
+							int r2 = j0 + k;
 							for (int i = 0; i < nsamples; ++i) {
 								int src = p2[i];
 								int rr = r2;
@@ -1314,7 +1244,6 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 			}
 		}
 
-		// mean + sd from the reservoir sample (same sample used for quantiles)
 		double mu = 0.0;
 		double m2 = 0.0;
 		long long n = 0;
@@ -1386,9 +1315,9 @@ bool permute_sample_vector_summary_excl_focus(
 
 	struct ChrCache {
 		const std::vector<int>* idx = nullptr;
-		Eigen::VectorXf gZ;	// nsamples
-		Eigen::MatrixXf Zc;	// nsamples x m (columns are rank within chr)
-		Eigen::VectorXf h;	// nsamples (LOCO HI for this chr)
+		Eigen::VectorXf gZ;
+		Eigen::MatrixXf Zc;
+		Eigen::VectorXf h;
 		int m = 0;
 		bool ok = false;
 	};
@@ -1406,10 +1335,8 @@ bool permute_sample_vector_summary_excl_focus(
 		if (cache[(size_t)c].m <= 0)
 			continue;
 
-		// LOCO HI excluding this chromosome (store it for binning)
 		cache[(size_t)c].h = hi_from_components_weighted_excluding(hc_full, chr);
 
-		// Residualize phenotype vs LOCO HI
 		int g_valid = 0;
 		try {
 			cache[(size_t)c].gZ = residualize_and_zscore_vector(g_raw, cache[(size_t)c].h, g_valid);
@@ -1417,7 +1344,6 @@ bool permute_sample_vector_summary_excl_focus(
 			continue;
 		}
 
-		// Residualize windows on this chromosome vs LOCO HI
 		int n_valid = 0;
 		try {
 			cache[(size_t)c].Zc = residualize_and_zscore_subset(X_scan, cache[(size_t)c].h, *cache[(size_t)c].idx, n_valid);
@@ -1474,7 +1400,6 @@ bool permute_sample_vector_summary_excl_focus(
 			const Eigen::VectorXf& h = cc.h;
 			const int m = cc.m;
 
-			// Build HI bins for this chromosome's LOCO HI
 			std::vector<std::vector<int>> bin_members((size_t)hi_bins);
 			for (int i = 0; i < nsamples; ++i) {
 				int b = hi_bin_index(h(i), hi_bins, 0.0f, 1.0f);
@@ -1482,7 +1407,6 @@ bool permute_sample_vector_summary_excl_focus(
 					bin_members[(size_t)b].push_back(i);
 			}
 
-			// perm[i] = source sample row used for output-row i (within-bin permutation)
 			std::vector<int> perm(nsamples);
 			for (int i = 0; i < nsamples; ++i)
 				perm[i] = i;
@@ -1499,7 +1423,6 @@ bool permute_sample_vector_summary_excl_focus(
 					perm[members[(size_t)k]] = shuf[(size_t)k];
 			}
 
-			// circular shift per *source* individual in rank space within this chromosome
 			std::vector<int> sh(nsamples, 0);
 			if (m > 1) {
 				std::uniform_int_distribution<int> U(0, m - 1);
@@ -1511,7 +1434,7 @@ bool permute_sample_vector_summary_excl_focus(
 				int b2 = std::min(tile_size, m - j0);
 
 				for (int k = 0; k < b2; ++k) {
-					int rrank = j0 + k;	// rank within chr
+					int rrank = j0 + k;
 					for (int i = 0; i < nsamples; ++i) {
 						int src = perm[i];
 						int rr = rrank;
@@ -1545,7 +1468,6 @@ bool permute_sample_vector_summary_excl_focus(
 			}
 		}
 
-		// mean + sd from the same reservoir sample used for quantiles
 		double mu = 0.0;
 		double m2 = 0.0;
 		long long n = 0;

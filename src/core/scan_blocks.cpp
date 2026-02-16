@@ -398,7 +398,7 @@ bool scan_blocks_write_hits(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
 
 		long long total_tested = 0;
 		float global_min = std::numeric_limits<float>::infinity();
@@ -420,12 +420,35 @@ bool scan_blocks_write_hits(
 		}
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
 				std::shuffle(dsample.begin(), dsample.end(), rng);
 				dsample.resize((size_t)distrib_sample);
+			}
+
+			// mean/sd on the same reservoir sample used for quantiles
+			double sum = 0.0;
+			double sumsq = 0.0;
+			int n = 0;
+			for (float x : dsample) {
+				if (!std::isfinite(x))
+					continue;
+				sum += (double)x;
+				sumsq += (double)x * (double)x;
+				++n;
+			}
+
+			float mean = 0.0f;
+			float sd = 0.0f;
+			if (n > 0) {
+				mean = (float)(sum / (double)n);
+				if (n > 1) {
+					double var = (sumsq - (sum * sum) / (double)n) / (double)(n - 1);
+					if (var < 0.0) var = 0.0; // numeric guard
+					sd = (float)std::sqrt(var);
+				}
 			}
 
 			std::sort(dsample.begin(), dsample.end());
@@ -448,6 +471,8 @@ bool scan_blocks_write_hits(
 				<< "\t" << p05
 				<< "\t" << p01
 				<< "\t" << global_min
+				<< "\t" << mean
+				<< "\t" << sd
 				<< "\n";
 		}
 	}
@@ -662,7 +687,7 @@ bool scan_target_write_hits(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
 
 		long long total_tested = 0;
 		float global_min = std::numeric_limits<float>::infinity();
@@ -684,13 +709,27 @@ bool scan_target_write_hits(
 		}
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
 				std::shuffle(dsample.begin(), dsample.end(), rng);
 				dsample.resize((size_t)distrib_sample);
 			}
+
+			double sum = 0.0;
+			double sumsq = 0.0;
+			for (float x : dsample) {
+				sum += (double)x;
+				sumsq += (double)x * (double)x;
+			}
+			double mean = sum / (double)dsample.size();
+			double var = 0.0;
+			if (dsample.size() > 1) {
+				var = (sumsq - (double)dsample.size() * mean * mean) / (double)(dsample.size() - 1);
+				if (var < 0.0) var = 0.0;
+			}
+			double sd = std::sqrt(var);
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -712,6 +751,8 @@ bool scan_target_write_hits(
 				<< "\t" << p05
 				<< "\t" << p01
 				<< "\t" << global_min
+				<< "\t" << (float)mean
+				<< "\t" << (float)sd
 				<< "\n";
 		}
 	}
@@ -990,10 +1031,10 @@ bool scan_vector_vs_windows_write_hits(
 		return false;
 	}
 
-	// output header
+	(void)nwin;
+
 	of << "tag\twB\tchrB\tposB\tr\tn\n";
 
-	// optional distribution summary (reservoir sample)
 	bool do_distrib = !distrib_path.empty();
 	std::mt19937_64 drng(distrib_seed);
 
@@ -1015,6 +1056,9 @@ bool scan_vector_vs_windows_write_hits(
 		if (!do_distrib)
 			return;
 
+		if (!std::isfinite(r))
+			return;
+
 		if (r < ds.min_r) ds.min_r = r;
 		if (r > ds.max_r) ds.max_r = r;
 
@@ -1031,6 +1075,9 @@ bool scan_vector_vs_windows_write_hits(
 	};
 
 	auto keep_hit = [&](float r) -> bool {
+		if (!std::isfinite(r))
+			return false;
+
 		if (opt.use_asym) {
 			bool keep = false;
 			if (opt.min_neg_r > 0.0f && r <= -opt.min_neg_r)
@@ -1045,7 +1092,6 @@ bool scan_vector_vs_windows_write_hits(
 	tested_pairs = 0;
 	kept_pairs = 0;
 
-	// Scan in chr blocks for cache friendliness, but we compute one r per window.
 	for (const auto& chr : chr_order) {
 		const auto& idx = windows_by_chr.at(chr);
 
@@ -1081,6 +1127,39 @@ bool scan_vector_vs_windows_write_hits(
 	of.close();
 
 	if (do_distrib) {
+		std::ofstream df(distrib_path);
+		if (!df) {
+			std::cerr << "Error: cannot write distrib summary to " << distrib_path << "\n";
+			return false;
+		}
+
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
+
+		if (ds.tested_pairs == 0 || dsample.empty()) {
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			return true;
+		}
+
+		if ((int)dsample.size() > distrib_sample) {
+			std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+			std::shuffle(dsample.begin(), dsample.end(), rng);
+			dsample.resize((size_t)distrib_sample);
+		}
+
+		double sum = 0.0;
+		double sumsq = 0.0;
+		for (float x : dsample) {
+			sum += (double)x;
+			sumsq += (double)x * (double)x;
+		}
+		double mean = sum / (double)dsample.size();
+		double var = 0.0;
+		if (dsample.size() > 1) {
+			var = (sumsq - (double)dsample.size() * mean * mean) / (double)(dsample.size() - 1);
+			if (var < 0.0) var = 0.0;
+		}
+		double sd = std::sqrt(var);
+
 		std::sort(dsample.begin(), dsample.end());
 
 		float p01 = quantile_from_sorted(dsample, 0.01);
@@ -1091,13 +1170,6 @@ bool scan_vector_vs_windows_write_hits(
 		float p95 = quantile_from_sorted(dsample, 0.95);
 		float p99 = quantile_from_sorted(dsample, 0.99);
 
-		std::ofstream df(distrib_path);
-		if (!df) {
-			std::cerr << "Error: cannot write distrib summary to " << distrib_path << "\n";
-			return false;
-		}
-
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\n";
 		df << ds.tested_pairs
 			<< "\t" << ds.max_r
 			<< "\t" << p99
@@ -1108,9 +1180,10 @@ bool scan_vector_vs_windows_write_hits(
 			<< "\t" << p05
 			<< "\t" << p01
 			<< "\t" << ds.min_r
+			<< "\t" << (float)mean
+			<< "\t" << (float)sd
 			<< "\n";
 	}
-
 
 	return true;
 }
