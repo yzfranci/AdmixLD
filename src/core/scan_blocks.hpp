@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <random>
 
 struct ScanOptions {
 	bool intra = false;
@@ -67,16 +68,21 @@ struct PermSummary {
 	float p95 = 0.0f;
 	float p99 = 0.0f;
 	float max_r = 0.0f;
+	float mean = 0.0f;
+	float sd = 0.0f;
 };
+
 
 bool permute_interchrom_summary_chrblock(
 	const Eigen::MatrixXf& Z,
+	const Eigen::VectorXf& h,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,
 	const ScanOptions& opt,
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
+	int hi_bins,
 	std::vector<PermSummary>& summaries_out
 );
 
@@ -115,10 +121,13 @@ bool scan_vector_vs_windows_write_hits(
 bool permute_sample_vector_summary(
 	const Eigen::MatrixXf& Z,
 	const Eigen::VectorXf& gZ,
+	const Eigen::VectorXf& h,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
 	const ScanOptions& opt,
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
+	int hi_bins,
 	std::vector<PermSummary>& summaries_out
 );
-
