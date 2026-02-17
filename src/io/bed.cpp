@@ -30,7 +30,8 @@ bool read_bed(
 		if (!(ss >> chr >> start >> end))
 			continue;
 
-		if (end <= start)
+		// Allow single-position intervals
+		if (end < start)
 			continue;
 
 		by_chr[chr].push_back(BedInterval{start, end});
@@ -53,7 +54,8 @@ bool read_bed(
 		merged.reserve(v.size());
 
 		for (const auto& it : v) {
-			if (merged.empty() || it.start > merged.back().end) {
+			// Closed intervals: merge overlapping or adjacent
+			if (merged.empty() || it.start > merged.back().end + 1) {
 				merged.push_back(it);
 			} else if (it.end > merged.back().end) {
 				merged.back().end = it.end;
@@ -65,6 +67,7 @@ bool read_bed(
 
 	return true;
 }
+
 
 bool bed_contains(
 	const std::unordered_map<std::string, std::vector<BedInterval>>& by_chr,
@@ -82,14 +85,16 @@ bool bed_contains(
 	// Closed intervals: [start, end]
 	while (lo < hi) {
 		int mid = lo + (hi - lo) / 2;
+
 		if (pos < v[mid].start) {
 			hi = mid;
 		} else if (pos > v[mid].end) {
 			lo = mid + 1;
 		} else {
-			return true;
+			return true;	// start <= pos <= end
 		}
 	}
 	return false;
 }
+
 
