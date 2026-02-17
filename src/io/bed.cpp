@@ -79,12 +79,12 @@ bool bed_contains(
 	int lo = 0;
 	int hi = (int)v.size();
 
-	// BED intervals are half-open: [start, end)
+	// Closed intervals: [start, end]
 	while (lo < hi) {
 		int mid = lo + (hi - lo) / 2;
 		if (pos < v[mid].start) {
 			hi = mid;
-		} else if (pos >= v[mid].end) {
+		} else if (pos > v[mid].end) {
 			lo = mid + 1;
 		} else {
 			return true;
@@ -92,3 +92,4 @@ bool bed_contains(
 	}
 	return false;
 }
+
