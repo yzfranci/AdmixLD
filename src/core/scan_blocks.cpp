@@ -760,36 +760,18 @@ bool scan_target_write_hits(
 	return true;
 }
 
-static inline int hi_bin_index(float h, int nbins, float lo = 0.0f, float hi = 1.0f) {
-	if (!(h == h))
-		return -1;
-	if (nbins <= 1)
-		return 0;
-	if (h <= lo)
-		return 0;
-	if (h >= hi)
-		return nbins - 1;
-	float t = (h - lo) / (hi - lo);
-	int b = (int)std::floor(t * (float)nbins);
-	if (b < 0) b = 0;
-	if (b >= nbins) b = nbins - 1;
-	return b;
-}
-
 bool permute_interchrom_summary_chrblock(
 	const Eigen::MatrixXf& Z,
-	const Eigen::VectorXf& h,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,
 	const ScanOptions& opt,
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
-	int hi_bins,
 	std::vector<PermSummary>& summaries_out
 ) {
 	if (opt.intra) {
-		std::cerr << "Error: HI-bin+cshift permutation summary is implemented for interchrom scans only.\n";
+		std::cerr << "Error: permutation summary is implemented for interchrom scans only.\n";
 		return false;
 	}
 	if (n_perm <= 0) {
@@ -798,21 +780,13 @@ bool permute_interchrom_summary_chrblock(
 	}
 	if (sample_size <= 0)
 		sample_size = 200000;
-	if (hi_bins <= 0)
-		hi_bins = 20;
 
-	int nsamples = opt.nsamples;
-	int tile_size = opt.tile_size;
-
-	if (h.size() != nsamples) {
-		std::cerr << "Error: HI vector length != nsamples\n";
-		return false;
-	}
+	const int nsamples = opt.nsamples;
+	const int tile_size = opt.tile_size;
+	const float denom = 1.0f / (float)(nsamples - 1);
 
 	summaries_out.clear();
 	summaries_out.resize((size_t)n_perm);
-
-	const float denom = 1.0f / (float)(nsamples - 1);
 
 	int nthreads = 1;
 	#ifdef ADFINDER_HAS_OPENMP
@@ -823,21 +797,12 @@ bool permute_interchrom_summary_chrblock(
 		omp_set_num_threads(nthreads);
 	#endif
 
-	std::cout << "Permutation test (HI-bin + circular-shift): " << n_perm << " replicates";
+	std::cout << "Permutation test (full shuffle): " << n_perm << " replicates";
 	#ifdef ADFINDER_HAS_OPENMP
 		std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
-	std::cout << "  hi_bins     = " << hi_bins << "\n";
 	std::cout << "  sample_size = " << sample_size << "\n";
-
-	// Precompute sample membership per HI bin
-	std::vector<std::vector<int>> bin_members((size_t)hi_bins);
-	for (int i = 0; i < nsamples; ++i) {
-		int b = hi_bin_index(h(i), hi_bins, 0.0f, 1.0f);
-		if (b >= 0)
-			bin_members[(size_t)b].push_back(i);
-	}
 
 	#ifdef ADFINDER_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
@@ -845,50 +810,15 @@ bool permute_interchrom_summary_chrblock(
 	for (int rep = 0; rep < n_perm; ++rep) {
 		std::mt19937_64 rng(seed + (uint64_t)rep);
 
+		// Single random permutation applied to chr1 side; chr2 remains in natural order
+		std::vector<int> perm(nsamples);
+		for (int i = 0; i < nsamples; ++i)
+			perm[i] = i;
+		std::shuffle(perm.begin(), perm.end(), rng);
+
 		Eigen::MatrixXf A(nsamples, tile_size);
 		Eigen::MatrixXf B(nsamples, tile_size);
 		Eigen::MatrixXf R(tile_size, tile_size);
-
-		// For each chromosome:
-		// - p_chr maps output-row i -> source-row p_chr[i], permuted within HI bins
-		// - shift_chr[source-row] is a random circular shift offset for that source individual
-		std::unordered_map<std::string, std::vector<int>> p_by_chr;
-		std::unordered_map<std::string, std::vector<int>> shift_by_chr;
-		p_by_chr.reserve(chr_order.size());
-		shift_by_chr.reserve(chr_order.size());
-
-		for (const auto& chr : chr_order) {
-			std::vector<int> p(nsamples);
-			for (int i = 0; i < nsamples; ++i)
-				p[i] = i;
-
-			// Permute within HI bins
-			for (int b = 0; b < hi_bins; ++b) {
-				const auto& members = bin_members[(size_t)b];
-				if ((int)members.size() <= 1)
-					continue;
-
-				std::vector<int> shuf = members;
-				std::shuffle(shuf.begin(), shuf.end(), rng);
-
-				for (int k = 0; k < (int)members.size(); ++k)
-					p[members[(size_t)k]] = shuf[(size_t)k];
-			}
-
-			p_by_chr.emplace(chr, std::move(p));
-
-			// Circular shifts are defined on the SOURCE individual index
-			const auto& idx = windows_by_chr.at(chr);
-			int m = (int)idx.size();
-
-			std::vector<int> sh(nsamples, 0);
-			if (m > 1) {
-				std::uniform_int_distribution<int> U(0, m - 1);
-				for (int s = 0; s < nsamples; ++s)
-					sh[s] = U(rng);
-			}
-			shift_by_chr.emplace(chr, std::move(sh));
-		}
 
 		PermSummary s;
 		s.min_r = std::numeric_limits<float>::infinity();
@@ -898,50 +828,31 @@ bool permute_interchrom_summary_chrblock(
 		sample.reserve((size_t)sample_size);
 		long long seen = 0;
 
-		int C = (int)chr_order.size();
+		const int C = (int)chr_order.size();
 		for (int c1 = 0; c1 < C; ++c1) {
 			const auto& chr1 = chr_order[c1];
 			const auto& idx1 = windows_by_chr.at(chr1);
-			const auto& p1 = p_by_chr.at(chr1);
-			const auto& sh1 = shift_by_chr.at(chr1);
-			int m1 = (int)idx1.size();
+			const int m1 = (int)idx1.size();
 
 			for (int c2 = c1 + 1; c2 < C; ++c2) {
 				const auto& chr2 = chr_order[c2];
 				const auto& idx2 = windows_by_chr.at(chr2);
-				const auto& p2 = p_by_chr.at(chr2);
-				const auto& sh2 = shift_by_chr.at(chr2);
-				int m2 = (int)idx2.size();
+				const int m2 = (int)idx2.size();
 
 				for (int i0 = 0; i0 < m1; i0 += tile_size) {
-					int b1 = std::min(tile_size, m1 - i0);
+					const int b1 = std::min(tile_size, m1 - i0);
 
 					for (int k = 0; k < b1; ++k) {
-						int r1 = i0 + k;	// rank within chr1 (sorted)
-						for (int i = 0; i < nsamples; ++i) {
-							int src = p1[i];
-							int rr = r1;
-							if (m1 > 1)
-								rr = (r1 + sh1[src]) % m1;
-							int w = idx1[(size_t)rr];
-							A(i, k) = Z(src, w);
-						}
+						const int w = idx1[(size_t)(i0 + k)];
+						for (int i = 0; i < nsamples; ++i)
+							A(i, k) = Z(perm[i], w);
 					}
 
 					for (int j0 = 0; j0 < m2; j0 += tile_size) {
-						int b2 = std::min(tile_size, m2 - j0);
+						const int b2 = std::min(tile_size, m2 - j0);
 
-						for (int k = 0; k < b2; ++k) {
-							int r2 = j0 + k;	// rank within chr2 (sorted)
-							for (int i = 0; i < nsamples; ++i) {
-								int src = p2[i];
-								int rr = r2;
-								if (m2 > 1)
-									rr = (r2 + sh2[src]) % m2;
-								int w = idx2[(size_t)rr];
-								B(i, k) = Z(src, w);
-							}
-						}
+						for (int k = 0; k < b2; ++k)
+							B.col(k) = Z.col(idx2[(size_t)(j0 + k)]);
 
 						R.topLeftCorner(b1, b2).noalias() = A.leftCols(b1).transpose() * B.leftCols(b2);
 						R.topLeftCorner(b1, b2) *= denom;
@@ -949,6 +860,8 @@ bool permute_interchrom_summary_chrblock(
 						for (int ia = 0; ia < b1; ++ia) {
 							for (int ib = 0; ib < b2; ++ib) {
 								float r = R(ia, ib);
+								if (!std::isfinite(r))
+									continue;
 
 								if (r < s.min_r) s.min_r = r;
 								if (r > s.max_r) s.max_r = r;
@@ -968,23 +881,23 @@ bool permute_interchrom_summary_chrblock(
 				}
 			}
 		}
-		// Mean + SD from the reservoir sample (consistent with percentile estimates)
+
 		double mu = 0.0;
-		double m2 = 0.0;
+		double m2_acc = 0.0;
 		long long n = 0;
 
 		for (float x : sample) {
-			if (std::isnan(x))
+			if (!std::isfinite(x))
 				continue;
 			++n;
 			double dx = (double)x - mu;
 			mu += dx / (double)n;
 			double dx2 = (double)x - mu;
-			m2 += dx * dx2;
+			m2_acc += dx * dx2;
 		}
 
 		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
-		s.sd = (n > 1) ? (float)std::sqrt(m2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);
@@ -1191,14 +1104,12 @@ bool scan_vector_vs_windows_write_hits(
 bool permute_sample_vector_summary(
 	const Eigen::MatrixXf& Z,
 	const Eigen::VectorXf& gZ,
-	const Eigen::VectorXf& h,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,
 	const ScanOptions& opt,
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
-	int hi_bins,
 	std::vector<PermSummary>& summaries_out
 ) {
 	if (n_perm <= 0) {
@@ -1208,33 +1119,18 @@ bool permute_sample_vector_summary(
 
 	const int nsamples = opt.nsamples;
 	const int tile_size = opt.tile_size;
+	const float denom = 1.0f / (float)(nsamples - 1);
 
 	if (gZ.size() != nsamples) {
 		std::cerr << "Error: gZ length does not match nsamples\n";
 		return false;
 	}
-	if (h.size() != nsamples) {
-		std::cerr << "Error: HI vector length != nsamples\n";
-		return false;
-	}
 
 	if (sample_size <= 0)
 		sample_size = 200000;
-	if (hi_bins <= 0)
-		hi_bins = 20;
 
 	summaries_out.clear();
 	summaries_out.resize((size_t)n_perm);
-
-	const float denom = 1.0f / (float)(nsamples - 1);
-
-	// Precompute membership per HI bin
-	std::vector<std::vector<int>> bin_members((size_t)hi_bins);
-	for (int i = 0; i < nsamples; ++i) {
-		int b = hi_bin_index(h(i), hi_bins, 0.0f, 1.0f);
-		if (b >= 0)
-			bin_members[(size_t)b].push_back(i);
-	}
 
 	int nthreads = 1;
 	#ifdef ADFINDER_HAS_OPENMP
@@ -1245,12 +1141,11 @@ bool permute_sample_vector_summary(
 		omp_set_num_threads(nthreads);
 	#endif
 
-	std::cout << "Permutation test (sample-geno; HI-bin + circular-shift): " << n_perm << " replicates";
+	std::cout << "Permutation test (sample-geno; full shuffle): " << n_perm << " replicates";
 	#ifdef ADFINDER_HAS_OPENMP
 		std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
-	std::cout << "  hi_bins     = " << hi_bins << "\n";
 	std::cout << "  sample_size = " << sample_size << "\n";
 
 	#ifdef ADFINDER_HAS_OPENMP
@@ -1259,39 +1154,17 @@ bool permute_sample_vector_summary(
 	for (int rep = 0; rep < n_perm; ++rep) {
 		std::mt19937_64 rng(seed + (uint64_t)rep);
 
-		// perm[i] = source individual row used for output-row i (permuted within HI bins)
 		std::vector<int> perm(nsamples);
 		for (int i = 0; i < nsamples; ++i)
 			perm[i] = i;
+		std::shuffle(perm.begin(), perm.end(), rng);
 
-		for (int b = 0; b < hi_bins; ++b) {
-			const auto& members = bin_members[(size_t)b];
-			if ((int)members.size() <= 1)
-				continue;
+		Eigen::VectorXf gZ_perm(nsamples);
+		for (int i = 0; i < nsamples; ++i)
+			gZ_perm(i) = gZ(perm[i]);
 
-			std::vector<int> shuf = members;
-			std::shuffle(shuf.begin(), shuf.end(), rng);
-
-			for (int k = 0; k < (int)members.size(); ++k)
-				perm[members[(size_t)k]] = shuf[(size_t)k];
-		}
-
-		// For each chromosome, define per-source-individual circular shift in rank space [0..m-1]
-		std::unordered_map<std::string, std::vector<int>> shift_by_chr;
-		shift_by_chr.reserve(chr_order.size());
-
-		for (const auto& chr : chr_order) {
-			const auto& idx = windows_by_chr.at(chr);
-			int m = (int)idx.size();
-
-			std::vector<int> sh(nsamples, 0);
-			if (m > 1) {
-				std::uniform_int_distribution<int> U(0, m - 1);
-				for (int s = 0; s < nsamples; ++s)
-					sh[s] = U(rng);
-			}
-			shift_by_chr.emplace(chr, std::move(sh));
-		}
+		Eigen::MatrixXf B(nsamples, tile_size);
+		Eigen::RowVectorXf R(tile_size);
 
 		PermSummary s;
 		s.min_r = std::numeric_limits<float>::infinity();
@@ -1301,39 +1174,23 @@ bool permute_sample_vector_summary(
 		sample.reserve((size_t)sample_size);
 		long long seen = 0;
 
-		Eigen::MatrixXf B(nsamples, tile_size);
-		Eigen::RowVectorXf R(tile_size);
-
-		// Loop over chromosomes to apply circular shift within each chromosome
 		for (const auto& chr : chr_order) {
 			const auto& idx = windows_by_chr.at(chr);
-			const auto& sh = shift_by_chr.at(chr);
-			int m = (int)idx.size();
+			const int m = (int)idx.size();
 
 			for (int j0 = 0; j0 < m; j0 += tile_size) {
-				int b2 = std::min(tile_size, m - j0);
+				const int b2 = std::min(tile_size, m - j0);
 
-				// Build B: each column is a window; rows are HI-binned permuted samples; columns are circular-shifted per source-individual
-				for (int k = 0; k < b2; ++k) {
-					int rrank = j0 + k;	// rank within this chromosome
+				for (int k = 0; k < b2; ++k)
+					B.col(k) = Z.col(idx[(size_t)(j0 + k)]);
 
-					for (int i = 0; i < nsamples; ++i) {
-						int src = perm[i];
-						int rr = rrank;
-
-						if (m > 1)
-							rr = (rrank + sh[src]) % m;
-
-						int w = idx[(size_t)rr];
-						B(i, k) = Z(src, w);
-					}
-				}
-
-				R.head(b2).noalias() = gZ.transpose() * B.leftCols(b2);
+				R.head(b2).noalias() = gZ_perm.transpose() * B.leftCols(b2);
 				R.head(b2) *= denom;
 
 				for (int k = 0; k < b2; ++k) {
 					float r = R(k);
+					if (!std::isfinite(r))
+						continue;
 
 					if (r < s.min_r) s.min_r = r;
 					if (r > s.max_r) s.max_r = r;
@@ -1351,23 +1208,22 @@ bool permute_sample_vector_summary(
 			}
 		}
 
-		// mean + sd from the reservoir sample (same philosophy as your quantiles)
 		double mu = 0.0;
-		double m2 = 0.0;
+		double m2_acc = 0.0;
 		long long n = 0;
 
 		for (float x : sample) {
-			if (std::isnan(x))
+			if (!std::isfinite(x))
 				continue;
 			++n;
 			double dx = (double)x - mu;
 			mu += dx / (double)n;
 			double dx2 = (double)x - mu;
-			m2 += dx * dx2;
+			m2_acc += dx * dx2;
 		}
 
 		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
-		s.sd = (n > 1) ? (float)std::sqrt(m2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);

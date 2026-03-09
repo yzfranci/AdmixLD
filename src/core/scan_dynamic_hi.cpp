@@ -1038,22 +1038,6 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	return true;
 }
 
-static inline int hi_bin_index(float h, int nbins, float lo = 0.0f, float hi = 1.0f) {
-	if (!(h == h))
-		return -1;
-	if (nbins <= 1)
-		return 0;
-	if (h <= lo)
-		return 0;
-	if (h >= hi)
-		return nbins - 1;
-	float t = (h - lo) / (hi - lo);
-	int b = (int)std::floor(t * (float)nbins);
-	if (b < 0) b = 0;
-	if (b >= nbins) b = nbins - 1;
-	return b;
-}
-
 bool permute_interchrom_summary_chrblock_excl_focus(
 	const Eigen::MatrixXf& X_scan,
 	const std::vector<std::string>& chroms_scan,
@@ -1065,14 +1049,13 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
-	int hi_bins,
 	std::vector<PermSummary>& summaries_out
 ) {
 	(void)chroms_scan;
 	(void)pos_scan;
 
 	if (opt.intra) {
-		std::cerr << "Error: HI-bin+cshift permutation summary is implemented for interchrom scans only.\n";
+		std::cerr << "Error: permutation summary is implemented for interchrom scans only.\n";
 		return false;
 	}
 	if (n_perm <= 0) {
@@ -1081,8 +1064,6 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 	}
 	if (sample_size <= 0)
 		sample_size = 200000;
-	if (hi_bins <= 0)
-		hi_bins = 20;
 
 	const int nsamples = opt.nsamples;
 	const int tile_size = opt.tile_size;
@@ -1090,6 +1071,49 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 
 	summaries_out.clear();
 	summaries_out.resize((size_t)n_perm);
+
+	// Precompute residualized Z matrices for each chromosome pair (independent of permutation)
+	const int C = (int)chr_order_scan.size();
+
+	struct PairCache {
+		Eigen::MatrixXf Z1;
+		Eigen::MatrixXf Z2;
+		int m1 = 0;
+		int m2 = 0;
+		bool ok = false;
+	};
+
+	std::vector<PairCache> pairs;
+	pairs.reserve((size_t)C * (size_t)(C - 1) / 2);
+
+	for (int c1 = 0; c1 < C; ++c1) {
+		const auto& chr1 = chr_order_scan[c1];
+		const auto& idx1 = windows_by_chr_scan.at(chr1);
+		const int m1 = (int)idx1.size();
+
+		for (int c2 = c1 + 1; c2 < C; ++c2) {
+			const auto& chr2 = chr_order_scan[c2];
+			const auto& idx2 = windows_by_chr_scan.at(chr2);
+			const int m2 = (int)idx2.size();
+
+			PairCache pc;
+			pc.m1 = m1;
+			pc.m2 = m2;
+
+			if (m1 == 0 || m2 == 0) {
+				pairs.push_back(std::move(pc));
+				continue;
+			}
+
+			Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr1, chr2);
+			int n_valid1 = 0, n_valid2 = 0;
+			pc.Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1);
+			pc.Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2);
+			pc.ok = true;
+
+			pairs.push_back(std::move(pc));
+		}
+	}
 
 	int nthreads = 1;
 	#ifdef ADFINDER_HAS_OPENMP
@@ -1099,19 +1123,24 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 	omp_set_num_threads(nthreads);
 	#endif
 
-	std::cout << "Permutation test (excl-focus, interchrom; HI-bin + circular-shift): " << n_perm << " replicates";
+	std::cout << "Permutation test (excl-focus, interchrom; full shuffle): " << n_perm << " replicates";
 	#ifdef ADFINDER_HAS_OPENMP
 	std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
-	std::cout << "  hi_bins     = " << hi_bins << "\n";
 	std::cout << "  sample_size = " << sample_size << "\n";
 
 	#ifdef ADFINDER_HAS_OPENMP
-	#pragma omp parallel for schedule(dynamic)
+	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
 	#endif
 	for (int rep = 0; rep < n_perm; ++rep) {
 		std::mt19937_64 rng(seed + (uint64_t)rep);
+
+		// Single random permutation applied to Z1 side; Z2 remains in natural order
+		std::vector<int> perm(nsamples);
+		for (int i = 0; i < nsamples; ++i)
+			perm[i] = i;
+		std::shuffle(perm.begin(), perm.end(), rng);
 
 		PermSummary s;
 		s.min_r = std::numeric_limits<float>::infinity();
@@ -1125,118 +1154,47 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 		Eigen::MatrixXf B(nsamples, tile_size);
 		Eigen::MatrixXf R(tile_size, tile_size);
 
-		const int C = (int)chr_order_scan.size();
-		for (int c1 = 0; c1 < C; ++c1) {
-			const auto& chr1 = chr_order_scan[c1];
-			const auto& idx1 = windows_by_chr_scan.at(chr1);
-			const int m1 = (int)idx1.size();
-			if (m1 == 0)
+		for (const auto& pc : pairs) {
+			if (!pc.ok)
 				continue;
 
-			for (int c2 = c1 + 1; c2 < C; ++c2) {
-				const auto& chr2 = chr_order_scan[c2];
-				const auto& idx2 = windows_by_chr_scan.at(chr2);
-				const int m2 = (int)idx2.size();
-				if (m2 == 0)
-					continue;
+			const int m1 = pc.m1;
+			const int m2 = pc.m2;
 
-				Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr1, chr2);
+			for (int i0 = 0; i0 < m1; i0 += tile_size) {
+				const int b1 = std::min(tile_size, m1 - i0);
 
-				std::vector<std::vector<int>> bin_members((size_t)hi_bins);
-				for (int i = 0; i < nsamples; ++i) {
-					int b = hi_bin_index(h(i), hi_bins, 0.0f, 1.0f);
-					if (b >= 0)
-						bin_members[(size_t)b].push_back(i);
+				for (int k = 0; k < b1; ++k) {
+					for (int i = 0; i < nsamples; ++i)
+						A(i, k) = pc.Z1(perm[i], i0 + k);
 				}
 
-				int n_valid1 = 0;
-				int n_valid2 = 0;
-				Eigen::MatrixXf Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1);
-				Eigen::MatrixXf Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2);
+				for (int j0 = 0; j0 < m2; j0 += tile_size) {
+					const int b2 = std::min(tile_size, m2 - j0);
 
-				std::vector<int> p1(nsamples), p2(nsamples);
-				for (int i = 0; i < nsamples; ++i) {
-					p1[i] = i;
-					p2[i] = i;
-				}
+					for (int k = 0; k < b2; ++k)
+						B.col(k) = pc.Z2.col(j0 + k);
 
-				for (int b = 0; b < hi_bins; ++b) {
-					const auto& members = bin_members[(size_t)b];
-					if ((int)members.size() <= 1)
-						continue;
+					R.topLeftCorner(b1, b2).noalias() = A.leftCols(b1).transpose() * B.leftCols(b2);
+					R.topLeftCorner(b1, b2) *= denom;
 
-					std::vector<int> shuf = members;
-					std::shuffle(shuf.begin(), shuf.end(), rng);
-					for (int k = 0; k < (int)members.size(); ++k)
-						p1[members[(size_t)k]] = shuf[(size_t)k];
+					for (int ia = 0; ia < b1; ++ia) {
+						for (int ib = 0; ib < b2; ++ib) {
+							float r = R(ia, ib);
+							if (!std::isfinite(r))
+								continue;
 
-					shuf = members;
-					std::shuffle(shuf.begin(), shuf.end(), rng);
-					for (int k = 0; k < (int)members.size(); ++k)
-						p2[members[(size_t)k]] = shuf[(size_t)k];
-				}
+							if (r < s.min_r) s.min_r = r;
+							if (r > s.max_r) s.max_r = r;
 
-				std::vector<int> sh1(nsamples, 0), sh2(nsamples, 0);
-				if (m1 > 1) {
-					std::uniform_int_distribution<int> U(0, m1 - 1);
-					for (int src = 0; src < nsamples; ++src)
-						sh1[src] = U(rng);
-				}
-				if (m2 > 1) {
-					std::uniform_int_distribution<int> U(0, m2 - 1);
-					for (int src = 0; src < nsamples; ++src)
-						sh2[src] = U(rng);
-				}
-
-				for (int i0 = 0; i0 < m1; i0 += tile_size) {
-					int b1 = std::min(tile_size, m1 - i0);
-
-					for (int k = 0; k < b1; ++k) {
-						int r1 = i0 + k;
-						for (int i = 0; i < nsamples; ++i) {
-							int src = p1[i];
-							int rr = r1;
-							if (m1 > 1)
-								rr = (r1 + sh1[src]) % m1;
-							A(i, k) = Z1(src, rr);
-						}
-					}
-
-					for (int j0 = 0; j0 < m2; j0 += tile_size) {
-						int b2 = std::min(tile_size, m2 - j0);
-
-						for (int k = 0; k < b2; ++k) {
-							int r2 = j0 + k;
-							for (int i = 0; i < nsamples; ++i) {
-								int src = p2[i];
-								int rr = r2;
-								if (m2 > 1)
-									rr = (r2 + sh2[src]) % m2;
-								B(i, k) = Z2(src, rr);
-							}
-						}
-
-						R.topLeftCorner(b1, b2).noalias() = A.leftCols(b1).transpose() * B.leftCols(b2);
-						R.topLeftCorner(b1, b2) *= denom;
-
-						for (int ia = 0; ia < b1; ++ia) {
-							for (int ib = 0; ib < b2; ++ib) {
-								float r = R(ia, ib);
-								if (!std::isfinite(r))
-									continue;
-
-								if (r < s.min_r) s.min_r = r;
-								if (r > s.max_r) s.max_r = r;
-
-								++seen;
-								if ((int)sample.size() < sample_size) {
-									sample.push_back(r);
-								} else {
-									std::uniform_int_distribution<long long> U(0, seen - 1);
-									long long jj = U(rng);
-									if (jj < sample_size)
-										sample[(size_t)jj] = r;
-								}
+							++seen;
+							if ((int)sample.size() < sample_size) {
+								sample.push_back(r);
+							} else {
+								std::uniform_int_distribution<long long> U(0, seen - 1);
+								long long jj = U(rng);
+								if (jj < sample_size)
+									sample[(size_t)jj] = r;
 							}
 						}
 					}
@@ -1245,7 +1203,7 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 		}
 
 		double mu = 0.0;
-		double m2 = 0.0;
+		double m2_acc = 0.0;
 		long long n = 0;
 		for (float x : sample) {
 			if (!std::isfinite(x))
@@ -1254,10 +1212,10 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 			double dx = (double)x - mu;
 			mu += dx / (double)n;
 			double dx2 = (double)x - mu;
-			m2 += dx * dx2;
+			m2_acc += dx * dx2;
 		}
 		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
-		s.sd = (n > 1) ? (float)std::sqrt(m2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);
@@ -1286,7 +1244,6 @@ bool permute_sample_vector_summary_excl_focus(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
-	int hi_bins,
 	std::vector<PermSummary>& summaries_out
 ) {
 	(void)chroms_scan;
@@ -1305,8 +1262,6 @@ bool permute_sample_vector_summary_excl_focus(
 
 	if (sample_size <= 0)
 		sample_size = 200000;
-	if (hi_bins <= 0)
-		hi_bins = 20;
 
 	const int tile_size = opt.tile_size;
 	const float denom = 1.0f / (float)(nsamples - 1);
@@ -1317,7 +1272,6 @@ bool permute_sample_vector_summary_excl_focus(
 		const std::vector<int>* idx = nullptr;
 		Eigen::VectorXf gZ;
 		Eigen::MatrixXf Zc;
-		Eigen::VectorXf h;
 		int m = 0;
 		bool ok = false;
 	};
@@ -1335,18 +1289,18 @@ bool permute_sample_vector_summary_excl_focus(
 		if (cache[(size_t)c].m <= 0)
 			continue;
 
-		cache[(size_t)c].h = hi_from_components_weighted_excluding(hc_full, chr);
+		Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr);
 
 		int g_valid = 0;
 		try {
-			cache[(size_t)c].gZ = residualize_and_zscore_vector(g_raw, cache[(size_t)c].h, g_valid);
+			cache[(size_t)c].gZ = residualize_and_zscore_vector(g_raw, h, g_valid);
 		} catch (...) {
 			continue;
 		}
 
 		int n_valid = 0;
 		try {
-			cache[(size_t)c].Zc = residualize_and_zscore_subset(X_scan, cache[(size_t)c].h, *cache[(size_t)c].idx, n_valid);
+			cache[(size_t)c].Zc = residualize_and_zscore_subset(X_scan, h, *cache[(size_t)c].idx, n_valid);
 		} catch (...) {
 			continue;
 		}
@@ -1365,19 +1319,23 @@ bool permute_sample_vector_summary_excl_focus(
 	summaries_out.clear();
 	summaries_out.resize((size_t)n_perm);
 
-	std::cout << "Permutation test (excl-focus, sample-geno; HI-bin + circular-shift): " << n_perm << " replicates";
+	std::cout << "Permutation test (excl-focus, sample-geno; full shuffle): " << n_perm << " replicates";
 	#ifdef ADFINDER_HAS_OPENMP
 	std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
-	std::cout << "  hi_bins     = " << hi_bins << "\n";
 	std::cout << "  sample_size = " << sample_size << "\n";
 
 	#ifdef ADFINDER_HAS_OPENMP
-	#pragma omp parallel for schedule(dynamic)
+	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
 	#endif
 	for (int rep = 0; rep < n_perm; ++rep) {
 		std::mt19937_64 rng(seed + (uint64_t)rep);
+
+		std::vector<int> perm(nsamples);
+		for (int i = 0; i < nsamples; ++i)
+			perm[i] = i;
+		std::shuffle(perm.begin(), perm.end(), rng);
 
 		PermSummary s;
 		s.min_r = std::numeric_limits<float>::infinity();
@@ -1395,56 +1353,20 @@ bool permute_sample_vector_summary_excl_focus(
 			if (!cc.ok || cc.m <= 0)
 				continue;
 
-			const Eigen::VectorXf& gZ = cc.gZ;
-			const Eigen::MatrixXf& Zc = cc.Zc;
-			const Eigen::VectorXf& h = cc.h;
+			// Permute gZ rows; Zc blocks remain in natural order
+			Eigen::VectorXf gZ_perm(nsamples);
+			for (int i = 0; i < nsamples; ++i)
+				gZ_perm(i) = cc.gZ(perm[i]);
+
 			const int m = cc.m;
 
-			std::vector<std::vector<int>> bin_members((size_t)hi_bins);
-			for (int i = 0; i < nsamples; ++i) {
-				int b = hi_bin_index(h(i), hi_bins, 0.0f, 1.0f);
-				if (b >= 0)
-					bin_members[(size_t)b].push_back(i);
-			}
-
-			std::vector<int> perm(nsamples);
-			for (int i = 0; i < nsamples; ++i)
-				perm[i] = i;
-
-			for (int b = 0; b < hi_bins; ++b) {
-				const auto& members = bin_members[(size_t)b];
-				if ((int)members.size() <= 1)
-					continue;
-
-				std::vector<int> shuf = members;
-				std::shuffle(shuf.begin(), shuf.end(), rng);
-
-				for (int k = 0; k < (int)members.size(); ++k)
-					perm[members[(size_t)k]] = shuf[(size_t)k];
-			}
-
-			std::vector<int> sh(nsamples, 0);
-			if (m > 1) {
-				std::uniform_int_distribution<int> U(0, m - 1);
-				for (int src = 0; src < nsamples; ++src)
-					sh[src] = U(rng);
-			}
-
 			for (int j0 = 0; j0 < m; j0 += tile_size) {
-				int b2 = std::min(tile_size, m - j0);
+				const int b2 = std::min(tile_size, m - j0);
 
-				for (int k = 0; k < b2; ++k) {
-					int rrank = j0 + k;
-					for (int i = 0; i < nsamples; ++i) {
-						int src = perm[i];
-						int rr = rrank;
-						if (m > 1)
-							rr = (rrank + sh[src]) % m;
-						B(i, k) = Zc(src, rr);
-					}
-				}
+				for (int k = 0; k < b2; ++k)
+					B.col(k) = cc.Zc.col(j0 + k);
 
-				R.head(b2).noalias() = gZ.transpose() * B.leftCols(b2);
+				R.head(b2).noalias() = gZ_perm.transpose() * B.leftCols(b2);
 				R.head(b2) *= denom;
 
 				for (int k = 0; k < b2; ++k) {
@@ -1469,7 +1391,7 @@ bool permute_sample_vector_summary_excl_focus(
 		}
 
 		double mu = 0.0;
-		double m2 = 0.0;
+		double m2_acc = 0.0;
 		long long n = 0;
 		for (float x : sample) {
 			if (!std::isfinite(x))
@@ -1478,10 +1400,10 @@ bool permute_sample_vector_summary_excl_focus(
 			double dx = (double)x - mu;
 			mu += dx / (double)n;
 			double dx2 = (double)x - mu;
-			m2 += dx * dx2;
+			m2_acc += dx * dx2;
 		}
 		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
-		s.sd = (n > 1) ? (float)std::sqrt(m2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);

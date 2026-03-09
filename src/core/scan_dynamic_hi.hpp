@@ -70,7 +70,6 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
-	int hi_bins,
 	std::vector<PermSummary>& summaries_out
 );
 
@@ -86,6 +85,5 @@ bool permute_sample_vector_summary_excl_focus(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
-	int hi_bins,
 	std::vector<PermSummary>& summaries_out
 );

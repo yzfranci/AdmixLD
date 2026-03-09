@@ -55,8 +55,7 @@ static void usage() {
 		<< "  --threads INT          Number of OpenMP threads for scan steps (default: 1)\n"
 		<< "  --distrib              Write empirical scan distribution summary\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distribution summary (default: 200000)\n"
-		<< "  --permute N            Run N interchrom chr-block permutations (summary stats)\n"
-		<< "  --perm-hi-bins INT     Number of HI bins for HI-binned permutations (default: 10)\n"
+		<< "  --permute N            Run N interchrom full-shuffle permutations (summary stats)\n"
 		<< "  --permute-sample INT   Reservoir sample size for percentile estimates (default: 200000)\n"
 		<< "  --seed INT             RNG seed for permutations (default: 1)\n"
 		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
@@ -103,7 +102,6 @@ struct CliOptions {
 	int n_perm = 0;
 	int perm_sample = 200000;
 	uint64_t seed = 1;
-	int perm_hi_bins = 10;
 
 	double min_abs_r = 0.0;
 	bool has_min_neg_r = false;
@@ -167,9 +165,6 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 
 		} else if (a == "--permute-sample" && i + 1 < argc) {
 			opt.perm_sample = std::stoi(argv[++i]);
-
-		} else if (a == "--perm-hi-bins" && i + 1 < argc) {
-			opt.perm_hi_bins = std::stoi(argv[++i]);
 
 		} else if (a == "--seed" && i + 1 < argc) {
 			opt.seed = (uint64_t)std::stoull(argv[++i]);
@@ -259,11 +254,6 @@ static int validate_options(const CliOptions& opt) {
 	if (opt.min_callrate < 0.0 || opt.min_callrate > 1.0) {
 		std::cerr << "Error: --min-callrate must be in [0,1]\n";
 		return 2;
-	}
-
-	if (opt.perm_hi_bins < 1) {
-	std::cerr << "Error: --perm-hi-bins must be >= 1\n";
-	return 2;
 	}
 
 	return 0;
@@ -890,11 +880,10 @@ int main(int argc, char** argv) {
 
 		if (cli.hi_mode == "global") {
 			if (!permute_sample_vector_summary(
-				Z, gZ, h,
+				Z, gZ,
 				blocks_by_chr, chr_order,
 				popt,
 				cli.seed, cli.n_perm, cli.perm_sample,
-				cli.perm_hi_bins,
 				summ
 			))
 				return 1;
@@ -919,7 +908,6 @@ int main(int argc, char** argv) {
 				cli.seed,
 				cli.n_perm,
 				cli.perm_sample,
-				cli.perm_hi_bins,
 				summ
 			))
 				return 1;
@@ -948,11 +936,10 @@ int main(int argc, char** argv) {
 
 		if (cli.hi_mode == "global") {
 			if (!permute_interchrom_summary_chrblock(
-				Z, h,
+				Z,
 				blocks_by_chr, chr_order,
 				popt,
 				cli.seed, cli.n_perm, cli.perm_sample,
-				cli.perm_hi_bins,
 				summ
 			))
 				return 1;
@@ -972,7 +959,6 @@ int main(int argc, char** argv) {
 				cli.seed,
 				cli.n_perm,
 				cli.perm_sample,
-				cli.perm_hi_bins,
 				summ
 			))
 				return 1;
