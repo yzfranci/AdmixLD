@@ -73,6 +73,8 @@ struct PermSummary {
 	float max_r = 0.0f;
 	float mean = 0.0f;
 	float sd = 0.0f;
+	float mean_r2 = 0.0f;
+	float sd_r2 = 0.0f;
 };
 
 

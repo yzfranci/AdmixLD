@@ -398,7 +398,7 @@ bool scan_blocks_write_hits(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
 
 		long long total_tested = 0;
 		float global_min = std::numeric_limits<float>::infinity();
@@ -420,7 +420,7 @@ bool scan_blocks_write_hits(
 		}
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
@@ -428,28 +428,25 @@ bool scan_blocks_write_hits(
 				dsample.resize((size_t)distrib_sample);
 			}
 
-			// mean/sd on the same reservoir sample used for quantiles
-			double sum = 0.0;
-			double sumsq = 0.0;
-			int n = 0;
+			double mu = 0.0, m2_acc = 0.0, mu_r2 = 0.0, m2_r2 = 0.0;
+			long long n = 0;
 			for (float x : dsample) {
 				if (!std::isfinite(x))
 					continue;
-				sum += (double)x;
-				sumsq += (double)x * (double)x;
 				++n;
+				double dx = (double)x - mu;
+				mu += dx / (double)n;
+				m2_acc += dx * ((double)x - mu);
+				double r2 = (double)x * (double)x;
+				double dr2 = r2 - mu_r2;
+				mu_r2 += dr2 / (double)n;
+				m2_r2 += dr2 * (r2 - mu_r2);
 			}
 
-			float mean = 0.0f;
-			float sd = 0.0f;
-			if (n > 0) {
-				mean = (float)(sum / (double)n);
-				if (n > 1) {
-					double var = (sumsq - (sum * sum) / (double)n) / (double)(n - 1);
-					if (var < 0.0) var = 0.0; // numeric guard
-					sd = (float)std::sqrt(var);
-				}
-			}
+			float mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
+			float sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+			float mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
+			float sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -473,6 +470,8 @@ bool scan_blocks_write_hits(
 				<< "\t" << global_min
 				<< "\t" << mean
 				<< "\t" << sd
+				<< "\t" << mean_r2
+				<< "\t" << sd_r2
 				<< "\n";
 		}
 	}
@@ -687,7 +686,7 @@ bool scan_target_write_hits(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
 
 		long long total_tested = 0;
 		float global_min = std::numeric_limits<float>::infinity();
@@ -709,7 +708,7 @@ bool scan_target_write_hits(
 		}
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
@@ -717,19 +716,25 @@ bool scan_target_write_hits(
 				dsample.resize((size_t)distrib_sample);
 			}
 
-			double sum = 0.0;
-			double sumsq = 0.0;
+			double mu = 0.0, m2_acc = 0.0, mu_r2 = 0.0, m2_r2 = 0.0;
+			long long n = 0;
 			for (float x : dsample) {
-				sum += (double)x;
-				sumsq += (double)x * (double)x;
+				if (!std::isfinite(x))
+					continue;
+				++n;
+				double dx = (double)x - mu;
+				mu += dx / (double)n;
+				m2_acc += dx * ((double)x - mu);
+				double r2 = (double)x * (double)x;
+				double dr2 = r2 - mu_r2;
+				mu_r2 += dr2 / (double)n;
+				m2_r2 += dr2 * (r2 - mu_r2);
 			}
-			double mean = sum / (double)dsample.size();
-			double var = 0.0;
-			if (dsample.size() > 1) {
-				var = (sumsq - (double)dsample.size() * mean * mean) / (double)(dsample.size() - 1);
-				if (var < 0.0) var = 0.0;
-			}
-			double sd = std::sqrt(var);
+
+			float mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
+			float sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+			float mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
+			float sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -751,8 +756,10 @@ bool scan_target_write_hits(
 				<< "\t" << p05
 				<< "\t" << p01
 				<< "\t" << global_min
-				<< "\t" << (float)mean
-				<< "\t" << (float)sd
+				<< "\t" << mean
+				<< "\t" << sd
+				<< "\t" << mean_r2
+				<< "\t" << sd_r2
 				<< "\n";
 		}
 	}
@@ -884,6 +891,8 @@ bool permute_interchrom_summary_chrblock(
 
 		double mu = 0.0;
 		double m2_acc = 0.0;
+		double mu_r2 = 0.0;
+		double m2_r2 = 0.0;
 		long long n = 0;
 
 		for (float x : sample) {
@@ -894,10 +903,17 @@ bool permute_interchrom_summary_chrblock(
 			mu += dx / (double)n;
 			double dx2 = (double)x - mu;
 			m2_acc += dx * dx2;
+			double r2 = (double)x * (double)x;
+			double dr2 = r2 - mu_r2;
+			mu_r2 += dr2 / (double)n;
+			double dr22 = r2 - mu_r2;
+			m2_r2 += dr2 * dr22;
 		}
 
 		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
 		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		s.mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
+		s.sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);
@@ -1046,10 +1062,10 @@ bool scan_vector_vs_windows_write_hits(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
 
 		if (ds.tested_pairs == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 			return true;
 		}
 
@@ -1059,19 +1075,25 @@ bool scan_vector_vs_windows_write_hits(
 			dsample.resize((size_t)distrib_sample);
 		}
 
-		double sum = 0.0;
-		double sumsq = 0.0;
+		double mu = 0.0, m2_acc = 0.0, mu_r2 = 0.0, m2_r2 = 0.0;
+		long long n = 0;
 		for (float x : dsample) {
-			sum += (double)x;
-			sumsq += (double)x * (double)x;
+			if (!std::isfinite(x))
+				continue;
+			++n;
+			double dx = (double)x - mu;
+			mu += dx / (double)n;
+			m2_acc += dx * ((double)x - mu);
+			double r2 = (double)x * (double)x;
+			double dr2 = r2 - mu_r2;
+			mu_r2 += dr2 / (double)n;
+			m2_r2 += dr2 * (r2 - mu_r2);
 		}
-		double mean = sum / (double)dsample.size();
-		double var = 0.0;
-		if (dsample.size() > 1) {
-			var = (sumsq - (double)dsample.size() * mean * mean) / (double)(dsample.size() - 1);
-			if (var < 0.0) var = 0.0;
-		}
-		double sd = std::sqrt(var);
+
+		float mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
+		float sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		float mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
+		float sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(dsample.begin(), dsample.end());
 
@@ -1093,8 +1115,10 @@ bool scan_vector_vs_windows_write_hits(
 			<< "\t" << p05
 			<< "\t" << p01
 			<< "\t" << ds.min_r
-			<< "\t" << (float)mean
-			<< "\t" << (float)sd
+			<< "\t" << mean
+			<< "\t" << sd
+			<< "\t" << mean_r2
+			<< "\t" << sd_r2
 			<< "\n";
 	}
 
@@ -1210,6 +1234,8 @@ bool permute_sample_vector_summary(
 
 		double mu = 0.0;
 		double m2_acc = 0.0;
+		double mu_r2 = 0.0;
+		double m2_r2 = 0.0;
 		long long n = 0;
 
 		for (float x : sample) {
@@ -1220,10 +1246,17 @@ bool permute_sample_vector_summary(
 			mu += dx / (double)n;
 			double dx2 = (double)x - mu;
 			m2_acc += dx * dx2;
+			double r2 = (double)x * (double)x;
+			double dr2 = r2 - mu_r2;
+			mu_r2 += dr2 / (double)n;
+			double dr22 = r2 - mu_r2;
+			m2_r2 += dr2 * dr22;
 		}
 
 		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
 		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		s.mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
+		s.sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);

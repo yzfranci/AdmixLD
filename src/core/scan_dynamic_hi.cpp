@@ -433,10 +433,10 @@ bool scan_blocks_write_hits_excl_focus(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
@@ -447,6 +447,23 @@ bool scan_blocks_write_hits_excl_focus(
 			float mean = std::numeric_limits<float>::quiet_NaN();
 			float sd = std::numeric_limits<float>::quiet_NaN();
 			compute_mean_sd_from_sample(dsample, mean, sd);
+
+			float mean_r2 = std::numeric_limits<float>::quiet_NaN();
+			float sd_r2 = std::numeric_limits<float>::quiet_NaN();
+			{
+				double mu2 = 0.0, m2 = 0.0;
+				long long n2 = 0;
+				for (float x : dsample) {
+					if (!std::isfinite(x)) continue;
+					++n2;
+					double r2 = (double)x * (double)x;
+					double dr2 = r2 - mu2;
+					mu2 += dr2 / (double)n2;
+					m2 += dr2 * (r2 - mu2);
+				}
+				if (n2 > 0) mean_r2 = (float)mu2;
+				if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
+			}
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -470,6 +487,8 @@ bool scan_blocks_write_hits_excl_focus(
 				<< "\t" << global_min
 				<< "\t" << mean
 				<< "\t" << sd
+				<< "\t" << mean_r2
+				<< "\t" << sd_r2
 				<< "\n";
 		}
 	}
@@ -731,7 +750,7 @@ bool scan_target_write_hits_excl_focus(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
 
 		long long total_tested = 0;
 		float global_min = std::numeric_limits<float>::infinity();
@@ -753,7 +772,7 @@ bool scan_target_write_hits_excl_focus(
 		}
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
@@ -764,6 +783,23 @@ bool scan_target_write_hits_excl_focus(
 			float mean = std::numeric_limits<float>::quiet_NaN();
 			float sd = std::numeric_limits<float>::quiet_NaN();
 			compute_mean_sd_from_sample(dsample, mean, sd);
+
+			float mean_r2 = std::numeric_limits<float>::quiet_NaN();
+			float sd_r2 = std::numeric_limits<float>::quiet_NaN();
+			{
+				double mu2 = 0.0, m2 = 0.0;
+				long long n2 = 0;
+				for (float x : dsample) {
+					if (!std::isfinite(x)) continue;
+					++n2;
+					double r2 = (double)x * (double)x;
+					double dr2 = r2 - mu2;
+					mu2 += dr2 / (double)n2;
+					m2 += dr2 * (r2 - mu2);
+				}
+				if (n2 > 0) mean_r2 = (float)mu2;
+				if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
+			}
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -787,6 +823,8 @@ bool scan_target_write_hits_excl_focus(
 				<< "\t" << global_min
 				<< "\t" << mean
 				<< "\t" << sd
+				<< "\t" << mean_r2
+				<< "\t" << sd_r2
 				<< "\n";
 		}
 	}
@@ -994,10 +1032,10 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 			return false;
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
+		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
 
 		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
 		} else {
 			if ((int)dsample.size() > distrib_sample) {
 				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
@@ -1008,6 +1046,23 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 			float mean = std::numeric_limits<float>::quiet_NaN();
 			float sd = std::numeric_limits<float>::quiet_NaN();
 			compute_mean_sd_from_sample(dsample, mean, sd);
+
+			float mean_r2 = std::numeric_limits<float>::quiet_NaN();
+			float sd_r2 = std::numeric_limits<float>::quiet_NaN();
+			{
+				double mu2 = 0.0, m2 = 0.0;
+				long long n2 = 0;
+				for (float x : dsample) {
+					if (!std::isfinite(x)) continue;
+					++n2;
+					double r2 = (double)x * (double)x;
+					double dr2 = r2 - mu2;
+					mu2 += dr2 / (double)n2;
+					m2 += dr2 * (r2 - mu2);
+				}
+				if (n2 > 0) mean_r2 = (float)mu2;
+				if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
+			}
 
 			std::sort(dsample.begin(), dsample.end());
 
@@ -1031,6 +1086,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 				<< "\t" << global_min
 				<< "\t" << mean
 				<< "\t" << sd
+				<< "\t" << mean_r2
+				<< "\t" << sd_r2
 				<< "\n";
 		}
 	}
@@ -1204,6 +1261,8 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 
 		double mu = 0.0;
 		double m2_acc = 0.0;
+		double mu_r2 = 0.0;
+		double m2_r2 = 0.0;
 		long long n = 0;
 		for (float x : sample) {
 			if (!std::isfinite(x))
@@ -1213,9 +1272,15 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 			mu += dx / (double)n;
 			double dx2 = (double)x - mu;
 			m2_acc += dx * dx2;
+			double r2 = (double)x * (double)x;
+			double dr2 = r2 - mu_r2;
+			mu_r2 += dr2 / (double)n;
+			m2_r2 += dr2 * (r2 - mu_r2);
 		}
 		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
 		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		s.mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
+		s.sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);
@@ -1392,6 +1457,8 @@ bool permute_sample_vector_summary_excl_focus(
 
 		double mu = 0.0;
 		double m2_acc = 0.0;
+		double mu_r2 = 0.0;
+		double m2_r2 = 0.0;
 		long long n = 0;
 		for (float x : sample) {
 			if (!std::isfinite(x))
@@ -1401,9 +1468,15 @@ bool permute_sample_vector_summary_excl_focus(
 			mu += dx / (double)n;
 			double dx2 = (double)x - mu;
 			m2_acc += dx * dx2;
+			double r2 = (double)x * (double)x;
+			double dr2 = r2 - mu_r2;
+			mu_r2 += dr2 / (double)n;
+			m2_r2 += dr2 * (r2 - mu_r2);
 		}
 		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
 		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+		s.mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
+		s.sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
 
 		std::sort(sample.begin(), sample.end());
 		s.p01 = quantile_from_sorted(sample, 0.01);

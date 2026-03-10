@@ -671,7 +671,7 @@ static void write_perm_summary_tsv(
 	const std::vector<PermSummary>& summ
 ) {
 	std::ofstream pf(path);
-	pf << "rep\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\n";
+	pf << "rep\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
 
 	for (int r = 0; r < (int)summ.size(); ++r) {
 		pf << r
@@ -686,6 +686,8 @@ static void write_perm_summary_tsv(
 			<< "\t" << summ[r].min_r
 			<< "\t" << summ[r].mean
 			<< "\t" << summ[r].sd
+			<< "\t" << summ[r].mean_r2
+			<< "\t" << summ[r].sd_r2
 			<< "\n";
 	}
 }
