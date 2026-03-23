@@ -43,8 +43,8 @@ WindowMatrix load_windows_from_vcf(
 
 	// ---- Apply hard cap on number of windows to load ----
 	int max_windows_load = opt.max_windows;
-	if (max_windows_load <= 0 || max_windows_load > ADFINDER_HARD_MAX_WINDOWS)
-		max_windows_load = ADFINDER_HARD_MAX_WINDOWS;
+	if (max_windows_load <= 0 || max_windows_load > ADMIXLD_HARD_MAX_WINDOWS)
+		max_windows_load = ADMIXLD_HARD_MAX_WINDOWS;
 
 	out.X = Eigen::MatrixXf(nsamples, max_windows_load);
 	const float NA = std::numeric_limits<float>::quiet_NaN();

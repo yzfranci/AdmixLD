@@ -9,7 +9,7 @@
 #include <iomanip>
 #include <cstdio>
 
-#ifdef ADFINDER_HAS_OPENMP
+#ifdef ADMIXLD_HAS_OPENMP
 #include <omp.h>
 #endif
 
@@ -85,7 +85,7 @@ bool scan_blocks_write_hits(
 		distrib_sample = 200000;
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 		nthreads = opt.threads;
 		omp_set_num_threads(nthreads);
 	#endif
@@ -136,12 +136,12 @@ bool scan_blocks_write_hits(
 	if (opt.intra) {
 		const int C = (int)chr_order.size();
 
-		#ifdef ADFINDER_HAS_OPENMP
+		#ifdef ADMIXLD_HAS_OPENMP
 		#pragma omp parallel for schedule(dynamic)
 		#endif
 		for (int c = 0; c < C; ++c) {
 			int tid = 0;
-			#ifdef ADFINDER_HAS_OPENMP
+			#ifdef ADMIXLD_HAS_OPENMP
 			tid = omp_get_thread_num();
 			#endif
 
@@ -151,7 +151,7 @@ bool scan_blocks_write_hits(
 
 			std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
 			if (!ofp) {
-				#ifdef ADFINDER_HAS_OPENMP
+				#ifdef ADMIXLD_HAS_OPENMP
 				#pragma omp critical
 				#endif
 				{
@@ -261,12 +261,12 @@ bool scan_blocks_write_hits(
 			for (int c2 = c1 + 1; c2 < C; ++c2)
 				jobs.push_back({c1, c2});
 
-		#ifdef ADFINDER_HAS_OPENMP
+		#ifdef ADMIXLD_HAS_OPENMP
 		#pragma omp parallel for schedule(dynamic)
 		#endif
 		for (int j = 0; j < (int)jobs.size(); ++j) {
 			int tid = 0;
-			#ifdef ADFINDER_HAS_OPENMP
+			#ifdef ADMIXLD_HAS_OPENMP
 			tid = omp_get_thread_num();
 			#endif
 
@@ -282,7 +282,7 @@ bool scan_blocks_write_hits(
 
 			std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
 			if (!ofp) {
-				#ifdef ADFINDER_HAS_OPENMP
+				#ifdef ADMIXLD_HAS_OPENMP
 				#pragma omp critical
 				#endif
 				{
@@ -511,7 +511,7 @@ bool scan_target_write_hits(
 	const int tpos = pos[target_w];
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 		nthreads = opt.threads;
 		omp_set_num_threads(nthreads);
 	#endif
@@ -556,12 +556,12 @@ bool scan_target_write_hits(
 
 	const int C = (int)chr_order.size();
 
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic)
 	#endif
 	for (int c = 0; c < C; ++c) {
 		int tid = 0;
-		#ifdef ADFINDER_HAS_OPENMP
+		#ifdef ADMIXLD_HAS_OPENMP
 		tid = omp_get_thread_num();
 		#endif
 
@@ -575,7 +575,7 @@ bool scan_target_write_hits(
 
 		std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
 		if (!ofp) {
-			#ifdef ADFINDER_HAS_OPENMP
+			#ifdef ADMIXLD_HAS_OPENMP
 			#pragma omp critical
 			#endif
 			{
@@ -796,7 +796,7 @@ bool permute_interchrom_summary_chrblock(
 	summaries_out.resize((size_t)n_perm);
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 		nthreads = opt.threads;
 		if (nthreads < 1)
 			nthreads = 1;
@@ -805,13 +805,13 @@ bool permute_interchrom_summary_chrblock(
 	#endif
 
 	std::cout << "Permutation test (full shuffle): " << n_perm << " replicates";
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 		std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
 	std::cout << "  sample_size = " << sample_size << "\n";
 
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
 	#endif
 	for (int rep = 0; rep < n_perm; ++rep) {
@@ -1157,7 +1157,7 @@ bool permute_sample_vector_summary(
 	summaries_out.resize((size_t)n_perm);
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 		nthreads = opt.threads;
 		if (nthreads < 1)
 			nthreads = 1;
@@ -1166,13 +1166,13 @@ bool permute_sample_vector_summary(
 	#endif
 
 	std::cout << "Permutation test (sample-geno; full shuffle): " << n_perm << " replicates";
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 		std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
 	std::cout << "  sample_size = " << sample_size << "\n";
 
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
 	#endif
 	for (int rep = 0; rep < n_perm; ++rep) {

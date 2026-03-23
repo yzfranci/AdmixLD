@@ -1,4 +1,4 @@
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_excl_intra \
 	--tile-size 1024 \
@@ -10,7 +10,7 @@
 	--chr scaffold-mi10 \
 	--hi-mode excl-focus
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_wo_excl_intra \
 	--tile-size 1024 \
@@ -21,7 +21,7 @@
 	--chr scaffold-mi9 \
 	--chr scaffold-mi10
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_excl_inter \
 	--tile-size 1024 \
@@ -32,7 +32,7 @@
 	--chr scaffold-mi10 \
 	--hi-mode excl-focus
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_excl_inter_distrib \
 	--tile-size 1024 \
@@ -44,7 +44,7 @@
 	--distrib \
 	--hi-mode excl-focus
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_excl_target \
 	--tile-size 1024 \
@@ -57,7 +57,7 @@
 	--chr scaffold-mi10 \
 	--hi-mode excl-focus
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_excl_sample_geno \
 	--tile-size 1024 \
@@ -69,7 +69,7 @@
 	--chr scaffold-mi10 \
 	--hi-mode excl-focus
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_excl_perm \
 	--tile-size 1024 \
@@ -81,7 +81,7 @@
 	--threads 4 \
 	--hi-mode excl-focus
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_excl_perm_sample_geno \
 	--tile-size 1024 \
@@ -94,7 +94,7 @@
 	--threads 4 \
 	--hi-mode excl-focus
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/ancestry_blocks.vcf \
 	--out test_compute_hi2 \
 	--tile-size 1024 \
@@ -102,7 +102,7 @@
 	--no-chr scaffold-ma3 \
 	--compute-hi
 
-./build/adfinder \
+./build/admixld \
 	--vcf tests/data/orioles_HZ_multisys.master.vcf.2025.02.11.vcf.gz \
 	--out test_missing \
 	--max-windows 1000 \

@@ -22,7 +22,7 @@
 #include "config.hpp"
 
 /*
-	adfinder main entry point
+	AdmixLD main entry point
 
 	Pipeline:
 	1) Parse/validate CLI
@@ -36,9 +36,9 @@
 
 static void usage() {
 	std::cerr
-		<< "adfinder (load blocks into matrix)\n"
+		<< "admixld (load blocks into matrix)\n"
 		<< "Usage:\n"
-		<< "  adfinder --vcf input.vcf[.gz] --out output_prefix\n"
+		<< "  admixld --vcf input.vcf[.gz] --out output_prefix\n"
 		<< "  --min-abs-r FLOAT      Keep pairs with |r| >= value (default)\n"
 		<< "  --min-neg-r FLOAT      Keep pairs with r <= -value (asymmetric)\n"
 		<< "  --min-pos-r FLOAT      Keep pairs with r >= value (asymmetric)\n"
@@ -93,7 +93,7 @@ struct CliOptions {
 	int max_windows = -1;	// <=0 means loader default cap
 	double min_callrate = 1.0;	// fraction in [0,1]
 
-	int tile_size = ADFINDER_DEFAULT_TILE_SIZE;
+	int tile_size = ADMIXLD_DEFAULT_TILE_SIZE;
 	int threads = 1;
 
 	bool distrib = false;
@@ -766,7 +766,7 @@ int main(int argc, char** argv) {
 
 	const int nblocks = (int)chroms.size();
 
-	std::cout << "adfinder VCF OK\n";
+	std::cout << "admixld VCF OK\n";
 	std::cout << "  vcf        = " << cli.vcf_path << "\n";
 	std::cout << "  out        = " << cli.out << "\n";
 	std::cout << "  nsamples   = " << nsamples << "\n";

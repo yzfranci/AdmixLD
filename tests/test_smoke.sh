@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BIN=./build/adfinder
+BIN=./build/admixld
 VCF=tests/data/ancestry_blocks.vcf
 
 OUT=$(mktemp -d)

@@ -10,7 +10,7 @@
 #include <vector>
 #include <cstdio>
 
-#ifdef ADFINDER_HAS_OPENMP
+#ifdef ADMIXLD_HAS_OPENMP
 #include <omp.h>
 #endif
 
@@ -165,7 +165,7 @@ bool scan_blocks_write_hits_excl_focus(
 		distrib_sample = 200000;
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	nthreads = opt.threads;
 	if (nthreads < 1) nthreads = 1;
 	omp_set_num_threads(nthreads);
@@ -351,12 +351,12 @@ bool scan_blocks_write_hits_excl_focus(
 	if (opt.intra) {
 		const int C = (int)chr_order_scan.size();
 
-		#ifdef ADFINDER_HAS_OPENMP
+		#ifdef ADMIXLD_HAS_OPENMP
 		#pragma omp parallel for schedule(dynamic)
 		#endif
 		for (int c = 0; c < C; ++c) {
 			int tid = 0;
-			#ifdef ADFINDER_HAS_OPENMP
+			#ifdef ADMIXLD_HAS_OPENMP
 			tid = omp_get_thread_num();
 			if (tid >= nthreads) tid = tid % nthreads;
 			#endif
@@ -372,12 +372,12 @@ bool scan_blocks_write_hits_excl_focus(
 			for (int c2 = c1 + 1; c2 < C; ++c2)
 				jobs.push_back({c1, c2});
 
-		#ifdef ADFINDER_HAS_OPENMP
+		#ifdef ADMIXLD_HAS_OPENMP
 		#pragma omp parallel for schedule(dynamic)
 		#endif
 		for (int j = 0; j < (int)jobs.size(); ++j) {
 			int tid = 0;
-			#ifdef ADFINDER_HAS_OPENMP
+			#ifdef ADMIXLD_HAS_OPENMP
 			tid = omp_get_thread_num();
 			if (tid >= nthreads) tid = tid % nthreads;
 			#endif
@@ -527,7 +527,7 @@ bool scan_target_write_hits_excl_focus(
 	const int tpos = pos_scan[target_w];
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	nthreads = opt.threads;
 	if (nthreads < 1) nthreads = 1;
 	omp_set_num_threads(nthreads);
@@ -558,12 +558,12 @@ bool scan_target_write_hits_excl_focus(
 
 	const int C = (int)chr_order_scan.size();
 
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic)
 	#endif
 	for (int c = 0; c < C; ++c) {
 		int tid = 0;
-		#ifdef ADFINDER_HAS_OPENMP
+		#ifdef ADMIXLD_HAS_OPENMP
 		tid = omp_get_thread_num();
 		if (tid >= nthreads) tid = tid % nthreads;
 		#endif
@@ -580,7 +580,7 @@ bool scan_target_write_hits_excl_focus(
 
 		std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
 		if (!ofp) {
-			#ifdef ADFINDER_HAS_OPENMP
+			#ifdef ADMIXLD_HAS_OPENMP
 			#pragma omp critical
 			#endif
 			{
@@ -864,7 +864,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const float denom = 1.0f / (float)(nsamples - 1);
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	nthreads = opt.threads;
 	if (nthreads < 1) nthreads = 1;
 	omp_set_num_threads(nthreads);
@@ -895,12 +895,12 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 
 	const int C = (int)chr_order_scan.size();
 
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic)
 	#endif
 	for (int c = 0; c < C; ++c) {
 		int tid = 0;
-		#ifdef ADFINDER_HAS_OPENMP
+		#ifdef ADMIXLD_HAS_OPENMP
 		tid = omp_get_thread_num();
 		if (tid >= nthreads) tid = tid % nthreads;
 		#endif
@@ -931,7 +931,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 
 		std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
 		if (!ofp) {
-			#ifdef ADFINDER_HAS_OPENMP
+			#ifdef ADMIXLD_HAS_OPENMP
 			#pragma omp critical
 			#endif
 			{
@@ -1173,7 +1173,7 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 	}
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	nthreads = opt.threads;
 	if (nthreads < 1) nthreads = 1;
 	omp_set_dynamic(0);
@@ -1181,13 +1181,13 @@ bool permute_interchrom_summary_chrblock_excl_focus(
 	#endif
 
 	std::cout << "Permutation test (excl-focus, interchrom; full shuffle): " << n_perm << " replicates";
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
 	std::cout << "  sample_size = " << sample_size << "\n";
 
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
 	#endif
 	for (int rep = 0; rep < n_perm; ++rep) {
@@ -1374,7 +1374,7 @@ bool permute_sample_vector_summary_excl_focus(
 	}
 
 	int nthreads = 1;
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	nthreads = opt.threads;
 	if (nthreads < 1) nthreads = 1;
 	omp_set_dynamic(0);
@@ -1385,13 +1385,13 @@ bool permute_sample_vector_summary_excl_focus(
 	summaries_out.resize((size_t)n_perm);
 
 	std::cout << "Permutation test (excl-focus, sample-geno; full shuffle): " << n_perm << " replicates";
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	std::cout << " using " << nthreads << " threads";
 	#endif
 	std::cout << "\n";
 	std::cout << "  sample_size = " << sample_size << "\n";
 
-	#ifdef ADFINDER_HAS_OPENMP
+	#ifdef ADMIXLD_HAS_OPENMP
 	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
 	#endif
 	for (int rep = 0; rep < n_perm; ++rep) {
