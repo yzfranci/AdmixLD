@@ -13,6 +13,7 @@
 #include <unordered_map>
 
 #include "io/vcf_windows.hpp"
+#include "io/msp_windows.hpp"
 #include "io/bed.hpp"
 #include "io/sample_vector.hpp"
 #include "core/hybrid_index.hpp"
@@ -39,6 +40,7 @@ static void usage() {
 		<< "admixld (load blocks into matrix)\n"
 		<< "Usage:\n"
 		<< "  admixld --vcf input.vcf[.gz] --out output_prefix\n"
+		<< "  admixld --msp input.msp.tsv   --out output_prefix\n"
 		<< "  --min-abs-r FLOAT      Keep pairs with |r| >= value (default)\n"
 		<< "  --min-neg-r FLOAT      Keep pairs with r <= -value (asymmetric)\n"
 		<< "  --min-pos-r FLOAT      Keep pairs with r >= value (asymmetric)\n"
@@ -68,6 +70,7 @@ static void usage() {
 
 struct CliOptions {
 	std::string vcf_path;
+	std::string msp_path;
 	std::string out;
 	std::string hi_path;
 
@@ -120,6 +123,9 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 
 		} else if (a == "--vcf" && i + 1 < argc) {
 			opt.vcf_path = argv[++i];
+
+		} else if (a == "--msp" && i + 1 < argc) {
+			opt.msp_path = argv[++i];
 
 		} else if (a == "--out" && i + 1 < argc) {
 			opt.out = argv[++i];
@@ -213,8 +219,14 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 }
 
 static int validate_options(const CliOptions& opt) {
-	if (opt.vcf_path.empty() || opt.out.empty()) {
-		std::cerr << "Error: --vcf and --out are required.\n";
+	if (opt.vcf_path.empty() == opt.msp_path.empty()) {
+		std::cerr << "Error: exactly one of --vcf or --msp is required.\n";
+		usage();
+		return 2;
+	}
+
+	if (opt.out.empty()) {
+		std::cerr << "Error: --out is required.\n";
 		usage();
 		return 2;
 	}
@@ -301,6 +313,7 @@ static bool apply_block_filters(
 	Eigen::MatrixXf& X,
 	std::vector<std::string>& chroms,
 	std::vector<int>& pos,
+	std::vector<int>& pos_start,
 	const std::vector<std::string>& sample_names,
 	const CliOptions& opt
 ) {
@@ -376,6 +389,13 @@ static bool apply_block_filters(
 	chroms.swap(chroms_f);
 	pos.swap(pos_f);
 
+	if (!pos_start.empty()) {
+		std::vector<int> pos_start_f((size_t)nwin2);
+		for (int j = 0; j < nwin2; ++j)
+			pos_start_f[j] = pos_start[(size_t)keep_idx[j]];
+		pos_start.swap(pos_start_f);
+	}
+
 	return true;
 }
 
@@ -383,6 +403,7 @@ static bool apply_callrate_filter(
 	Eigen::MatrixXf& X,
 	std::vector<std::string>& chroms,
 	std::vector<int>& pos,
+	std::vector<int>& pos_start,
 	const std::vector<std::string>& sample_names,
 	double min_callrate
 ) {
@@ -446,6 +467,13 @@ static bool apply_callrate_filter(
 	chroms.swap(chroms_f);
 	pos.swap(pos_f);
 
+	if (!pos_start.empty()) {
+		std::vector<int> pos_start_f((size_t)nblocks2);
+		for (int j = 0; j < nblocks2; ++j)
+			pos_start_f[j] = pos_start[(size_t)keep_idx[j]];
+		pos_start.swap(pos_start_f);
+	}
+
 	return true;
 }
 
@@ -500,9 +528,11 @@ static bool compute_or_load_hi(
 	const Eigen::MatrixXf& X,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
+	const std::vector<int>& pos_start,
 	const Eigen::MatrixXf& X_full,
 	const std::vector<std::string>& chroms_full,
 	const std::vector<int>& pos_full,
+	const std::vector<int>& pos_start_full,
 	const CliOptions& opt
 ) {
 	// Default: compute HI on full (unfiltered) set for stable ancestry covariate.
@@ -515,11 +545,12 @@ static bool compute_or_load_hi(
 	const Eigen::MatrixXf& X_hi = opt.compute_hi_only ? X : X_full;
 	const std::vector<std::string>& chroms_hi = opt.compute_hi_only ? chroms : chroms_full;
 	const std::vector<int>& pos_hi = opt.compute_hi_only ? pos : pos_full;
+	const std::vector<int>& pos_start_hi = opt.compute_hi_only ? pos_start : pos_start_full;
 
 	if (opt.compute_hi_only)
 		std::cout << "Computing HI from FILTERED blocks (--chr/--no-chr/--bed applied)\n";
 	else
-		std::cout << "Computing HI from FULL VCF (independent of --chr/--no-chr/--bed)\n";
+		std::cout << "Computing HI from full block set (independent of --chr/--no-chr/--bed)\n";
 
 	if (opt.unweighted_hi) {
 		h = compute_hi_from_X(X_hi);
@@ -528,7 +559,8 @@ static bool compute_or_load_hi(
 			X_hi,
 			chroms_hi,
 			pos_hi,
-			opt.pos_is_start
+			opt.pos_is_start,
+			pos_start_hi
 		);
 	}
 
@@ -592,6 +624,7 @@ static bool build_hi_components_if_needed(
 	const Eigen::MatrixXf& X_full,
 	const std::vector<std::string>& chroms_full,
 	const std::vector<int>& pos_full,
+	const std::vector<int>& pos_start_full,
 	const CliOptions& opt
 ) {
 	has_hc_full = false;
@@ -609,7 +642,8 @@ static bool build_hi_components_if_needed(
 		X_full,
 		chroms_full,
 		pos_full,
-		opt.pos_is_start
+		opt.pos_is_start,
+		pos_start_full
 	);
 	has_hc_full = true;
 	return true;
@@ -734,11 +768,22 @@ int main(int argc, char** argv) {
 	if (sample_geno_mode && cli.has_target)
 		std::cout << "Note: --target-* ignored in --sample-geno mode\n";
 
-	// Stage 2: Load blocks from VCF
-	VcfLoadOptions vopt;
-	vopt.max_windows = cli.max_windows;
-
-	WindowMatrix wm = load_windows_from_vcf(cli.vcf_path, vopt);
+	// Stage 2: Load blocks from VCF or MSP
+	WindowMatrix wm;
+	{
+		const int max_win = cli.max_windows;
+		if (!cli.vcf_path.empty()) {
+			VcfLoadOptions vopt;
+			vopt.max_windows = max_win;
+			wm = load_windows_from_vcf(cli.vcf_path, vopt);
+		} else {
+			if (cli.pos_is_start)
+				std::cerr << "Warning: --pos-is-start has no effect with --msp (exact block lengths are used).\n";
+			MspLoadOptions mopt;
+			mopt.max_windows = max_win;
+			wm = load_windows_from_msp(cli.msp_path, mopt);
+		}
+	}
 	const int nsamples = (int)wm.sample_names.size();
 
 	Eigen::MatrixXf X = wm.X;
@@ -746,17 +791,19 @@ int main(int argc, char** argv) {
 
 	std::vector<std::string> chroms = wm.meta.chrom;
 	std::vector<int> pos = wm.meta.pos;
+	std::vector<int> pos_start = wm.meta.pos_start;
 
 	// Copies for full-genome HI + LOCO components (must be defined BEFORE any filtering).
 	std::vector<std::string> chroms_full = chroms;
 	std::vector<int> pos_full = pos;
+	std::vector<int> pos_start_full = pos_start;
 
 	// Stage 3a: Apply optional block filters
-	if (!apply_block_filters(X, chroms, pos, wm.sample_names, cli))
+	if (!apply_block_filters(X, chroms, pos, pos_start, wm.sample_names, cli))
 		return 1;
 
 	// Stage 3b: Apply optional callrate filters
-	if (!apply_callrate_filter(X, chroms, pos, wm.sample_names, cli.min_callrate))
+	if (!apply_callrate_filter(X, chroms, pos, pos_start, wm.sample_names, cli.min_callrate))
 		return 1;
 
 	if (cli.min_callrate < 1.0) {
@@ -766,8 +813,11 @@ int main(int argc, char** argv) {
 
 	const int nblocks = (int)chroms.size();
 
-	std::cout << "admixld VCF OK\n";
-	std::cout << "  vcf        = " << cli.vcf_path << "\n";
+	std::cout << "admixld input OK\n";
+	if (!cli.vcf_path.empty())
+		std::cout << "  vcf        = " << cli.vcf_path << "\n";
+	else
+		std::cout << "  msp        = " << cli.msp_path << "\n";
 	std::cout << "  out        = " << cli.out << "\n";
 	std::cout << "  nsamples   = " << nsamples << "\n";
 	std::cout << "  blocks     = " << nblocks << "\n";
@@ -786,7 +836,7 @@ int main(int argc, char** argv) {
 
 	// Stage 5: Compute/load hybrid index
 	Eigen::VectorXf h;
-	if (!compute_or_load_hi(h, wm, X, chroms, pos, X_full, chroms_full, pos_full, cli))
+	if (!compute_or_load_hi(h, wm, X, chroms, pos, pos_start, X_full, chroms_full, pos_full, pos_start_full, cli))
 		return 1;
 
 	std::string hi_out_path = cli.out + ".hi.tsv";
@@ -801,7 +851,7 @@ int main(int argc, char** argv) {
 	// Stage 6: Build HI components for excl-focus mode (full genome)
 	HiComponentsWeighted hc_full;
 	bool has_hc_full = false;
-	if (!build_hi_components_if_needed(hc_full, has_hc_full, X_full, chroms_full, pos_full, cli))
+	if (!build_hi_components_if_needed(hc_full, has_hc_full, X_full, chroms_full, pos_full, pos_start_full, cli))
 		return 2;
 
 	// Stage 7: Resolve target block (after filtering)

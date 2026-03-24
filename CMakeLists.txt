@@ -18,6 +18,7 @@ find_package(Eigen3 REQUIRED)
 add_executable(admixld
 	src/main.cpp
 	src/io/vcf_windows.cpp
+	src/io/msp_windows.cpp
 	src/io/bed.cpp
 	src/io/sample_vector.cpp
 	src/core/hybrid_index.cpp

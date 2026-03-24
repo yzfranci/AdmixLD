@@ -32,6 +32,11 @@ tests/test_smoke.sh
 # Empirical distribution test
 ./build/admixld --vcf tests/data/ancestry_blocks.vcf --out distr --max-windows 8000 --distrib --seed 123 --min-abs-r 0.5
 ```
+```bash
+# MSP file test
+./build/admixld --vcf tests/data/ancestry_blocks.vcf --out msp_vcf_test --chr scaffold-ma1 --chr scaffold-ma2 --distrib --seed 123 --min-abs-r 0.5
+./build/admixld --msp tests/data/example.msp.tsv --out msp_msp_test --chr scaffold-ma1 --chr scaffold-ma2 --distrib --seed 123 --min-abs-r 0.5
+```
 
 
 ## As a reminder for the missing data handling

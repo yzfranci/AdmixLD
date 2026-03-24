@@ -9,18 +9,18 @@ Eigen::VectorXf compute_hi_from_X(
 	const Eigen::MatrixXf& X
 );
 
-// Weighted HI using inferred block lengths per chromosome.
-// If pos_is_start=false (default): pos is END of block
-//		len[0] = pos0
-//		len[k] = pos[k] - pos[k-1]
-// If pos_is_start=true: pos is START of block
-//		len[k] = pos[k+1] - pos[k] (except last, uses previous len or 1)
+// Weighted HI using block lengths per chromosome.
+// If pos_start is non-empty (MSP input): exact lengths computed as pos[w] - pos_start[w].
+// Otherwise (VCF input): lengths inferred from pos alone:
+//   pos_is_start=false (default): pos is END, len[k] = pos[k] - pos[k-1]
+//   pos_is_start=true:            pos is START, len[k] = pos[k+1] - pos[k]
 // Uses weights only for non-missing genotypes in X.
 Eigen::VectorXf compute_hi_from_X_weighted(
 	const Eigen::MatrixXf& X,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
-	bool pos_is_start
+	bool pos_is_start,
+	const std::vector<int>& pos_start = {}
 );
 
 struct HiComponentsWeighted {
@@ -33,12 +33,13 @@ struct HiComponentsWeighted {
 };
 
 // Build per-chromosome weighted components (for LOCO/LOCO2).
-// Uses the same block-length inference as compute_hi_from_X_weighted.
+// Uses the same block-length logic as compute_hi_from_X_weighted.
 HiComponentsWeighted build_hi_components_weighted(
 	const Eigen::MatrixXf& X,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
-	bool pos_is_start
+	bool pos_is_start,
+	const std::vector<int>& pos_start = {}
 );
 
 // Compute weighted HI from components excluding none / one / two chromosomes.

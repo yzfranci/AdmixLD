@@ -38,6 +38,21 @@ Eigen::VectorXf compute_hi_from_X(
 	return h;
 }
 
+// Compute exact block lengths from MSP spos/epos columns.
+static std::vector<float> compute_block_lengths_from_range_msp(
+	const std::vector<int>& pos_start,
+	const std::vector<int>& pos_end
+) {
+	int nwin = (int)pos_start.size();
+	std::vector<float> len((size_t)nwin, 1.0f);
+	for (int w = 0; w < nwin; ++w) {
+		float L = (float)(pos_end[w] - pos_start[w]);
+		if (L < 1.0f) L = 1.0f;
+		len[(size_t)w] = L;
+	}
+	return len;
+}
+
 static std::vector<float> infer_block_lengths(
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
@@ -111,7 +126,8 @@ Eigen::VectorXf compute_hi_from_X_weighted(
 	const Eigen::MatrixXf& X,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
-	bool pos_is_start
+	bool pos_is_start,
+	const std::vector<int>& pos_start
 ) {
 	int nsamples = (int)X.rows();
 	int nwin = (int)X.cols();
@@ -123,7 +139,9 @@ Eigen::VectorXf compute_hi_from_X_weighted(
 		return compute_hi_from_X(X);
 	}
 
-	std::vector<float> wlen = infer_block_lengths(chroms, pos, pos_is_start);
+	std::vector<float> wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
+		? compute_block_lengths_from_range_msp(pos_start, pos)
+		: infer_block_lengths(chroms, pos, pos_is_start);
 
 	for (int i = 0; i < nsamples; ++i) {
 		double wsum = 0.0;
@@ -152,7 +170,8 @@ HiComponentsWeighted build_hi_components_weighted(
 	const Eigen::MatrixXf& X,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
-	bool pos_is_start
+	bool pos_is_start,
+	const std::vector<int>& pos_start
 ) {
 	const int nsamples = (int)X.rows();
 	const int nwin = (int)X.cols();
@@ -193,7 +212,9 @@ HiComponentsWeighted build_hi_components_weighted(
 	// Weights per window (block lengths)
 	std::vector<float> wlen((size_t)nwin, 1.0f);
 	if ((int)chroms.size() == nwin && (int)pos.size() == nwin) {
-		wlen = infer_block_lengths(chroms, pos, pos_is_start);
+		wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
+			? compute_block_lengths_from_range_msp(pos_start, pos)
+			: infer_block_lengths(chroms, pos, pos_is_start);
 	}
 
 	// Accumulate components
