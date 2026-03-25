@@ -67,16 +67,43 @@ scaffold-mi9    421749  .   A   G   ...  GT:DS       0|0:0       1|0:0.5
 scaffold-mi9    845000  .   A   G   ...  GT:DS       1|1:2       0|0:0
 ```
 
-### Hybrid Index TSV (`--hi`)
+### MSP File (`--msp`)
 
-Optional pre-computed hybrid index. Tab-separated with a header row. Must contain all samples present in the VCF.
+Alternative to `--vcf`. Accepts the `.msp.tsv` format produced by **RFMix2** and **Gnomix**. Each data row represents one local ancestry segment; the dosage for each sample is the sum of the two haplotype ancestry calls (0, 1, or 2).
+
+The file must begin with exactly two comment header lines:
 
 ```
-sample    hi
-CV0340    0.373028
-CV0359    0.213722
-CV0362    0.891145
+#Subpopulation order/codes: Pop0=0    Pop1=1
+#chm    spos    epos    sgpos    egpos    n snps    sample1.0    sample1.1    sample2.0    sample2.1    ...
 ```
+
+- **`chm`** — chromosome name
+- **`spos` / `epos`** — integer start and end positions of the segment (both used directly; `--pos-is-start` has no effect for MSP input)
+- **`sgpos` / `egpos` / `n snps`** — genetic positions and SNP count (read but not used)
+- **`sample.0` / `sample.1`** — haplotype ancestry calls, must be `0` or `1`; any other value is treated as missing
+
+```
+#Subpopulation order/codes: Pop0=0    Pop1=1
+#chm           spos      epos       sgpos    egpos    n snps    CV0340.0    CV0340.1    CV0359.0    CV0359.1
+scaffold-mi9   1         421749     0.00     4.12     312       0           0           1           0
+scaffold-mi9   421750    845000     4.12     8.21     289       1           1           0           0
+```
+
+### Covariate TSV (`--cov`)
+
+Optional user-supplied covariate matrix used instead of the computed hybrid index for residualization. Tab-separated with an optional header row. Must contain all samples present in the input file.
+
+Supports one or more covariate columns (e.g., a single hybrid index, or PC1–PC3 from a PCA). No missing values are permitted. The number of columns is inferred from the first data row.
+
+```
+sample    cov1      cov2      cov3
+CV0340    0.373028  0.021     -0.014
+CV0359    0.213722  -0.003    0.008
+CV0362    0.891145  0.041     0.002
+```
+
+A single-column file is equivalent to the former `--hi` flag and produces identical results.
 
 ### Sample Trait TSV (`--sample-geno`)
 
@@ -167,7 +194,8 @@ Written when `--distrib` is used. Single row summarising the empirical distribut
 
 | Flag | Description |
 |------|-------------|
-| `--vcf FILE` | VCF/BCF input file |
+| `--vcf FILE` | VCF/BCF input file (mutually exclusive with `--msp`) |
+| `--msp FILE` | RFMix2/Gnomix `.msp.tsv` file (mutually exclusive with `--vcf`) |
 | `--out PREFIX` | Output file prefix |
 
 ### Scanning Behaviour
@@ -179,15 +207,15 @@ Written when `--distrib` is used. Single row summarising the empirical distribut
 | `--max-dist INT` | unlimited | Maximum basepair distance for intrachromosomal pairs |
 | `--max-windows N` | all | Load at most N blocks (useful for testing) |
 
-### Hybrid Index
+### Hybrid Index / Covariates
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--hi FILE` | computed | Load pre-computed HI from TSV |
-| `--hi-mode STR` | `global` | HI computation mode: `global` or `excl-focus` (LOCO) |
-| `--compute-hi` | off | Compute and save HI, then exit without scanning |
-| `--unweighted-hi` | off | Use unweighted (simple mean) HI instead of block-length weighted |
-| `--pos-is-start` | off | Treat VCF POS as block start rather than block end |
+| `--cov FILE` | computed | Load covariate matrix from TSV (one or more columns); replaces computed HI |
+| `--hi-mode STR` | `global` | HI correction mode: `global` or `excl-focus` (LOCO; incompatible with `--cov`) |
+| `--compute-hi` | off | Compute and save HI, then exit without scanning (ignored with `--cov`) |
+| `--unweighted-hi` | off | Use unweighted (simple mean) HI instead of block-length weighted (ignored with `--cov`) |
+| `--pos-is-start` | off | Treat VCF POS as block start rather than block end; no effect for `--msp` input (ignored with `--cov`) |
 
 ### Filtering
 
@@ -264,14 +292,14 @@ where $n$ is the number of blocks. Equivalent to treating all blocks equally reg
 
 ### Residualization
 
-Each block's dosage vector is residualized on HI via ordinary least squares:
+Each block's dosage vector is residualized on the covariate matrix $\mathbf{H}$ (samples × $k$) via ordinary least squares. By default $\mathbf{H}$ is the single-column genome-wide hybrid index; with `--cov` it can be any number of columns (e.g. PC1–PC3 from a PCA).
 
-1. Centre HI: $h_i^c = \text{HI}_i - \bar{\text{HI}}$
-2. Regress: $\hat{\beta} = \text{cov}(\mathbf{d}_j, \mathbf{h}^c) / \text{var}(\mathbf{h}^c)$
-3. Residuals: $\epsilon_{ij} = d_{ij} - \bar{d}_j - \hat{\beta} h_i^c$
-4. Standardise: $Z_{ij} = (\epsilon_{ij} - \bar{\epsilon}_j) / \text{SD}(\boldsymbol{\epsilon}_j)$
+1. Centre each covariate column: $H^c_{ij} = H_{ij} - \bar{H}_j$
+2. Regress dosage on covariates: $\hat{\boldsymbol{\beta}} = (\mathbf{H}^{cT} \mathbf{H}^c)^{-1} \mathbf{H}^{cT} \mathbf{d}_w$
+3. Residuals: $\boldsymbol{\epsilon}_w = \mathbf{d}_w - \bar{d}_w \mathbf{1} - \mathbf{H}^c \hat{\boldsymbol{\beta}}$
+4. Standardise: $Z_{iw} = (\epsilon_{iw} - \bar{\epsilon}_w) / \text{SD}(\boldsymbol{\epsilon}_w)$
 
-Blocks with fewer than 3 samples, zero HI variance, or zero residual SD are excluded.
+The $k \times k$ system $(\mathbf{H}^{cT} \mathbf{H}^c)$ is factored once (LDLT) and reused across all windows. Blocks with fewer than $k+2$ samples, a singular covariate matrix, or zero residual SD are excluded.
 
 ### Correlation Scanning
 
@@ -350,13 +378,21 @@ Mean imputation is applied only when explicitly requested. This option is intend
   --min-abs-r 0.3
 ```
 
-### Scan with pre-computed hybrid index
+### Scan with custom covariates (hybrid index or PCA)
 
 ```bash
+# Single pre-computed hybrid index
 ./build/admixld \
   --vcf data.vcf \
   --out results \
-  --hi custom.hi.tsv \
+  --cov custom.hi.tsv \
+  --min-abs-r 0.5
+
+# Multiple PCA covariates (PC1–PC3)
+./build/admixld \
+  --vcf data.vcf \
+  --out results \
+  --cov pca_covariates.tsv \
   --min-abs-r 0.5
 ```
 
@@ -442,3 +478,6 @@ Mean imputation is applied only when explicitly requested. This option is intend
 - **Multithreading**: Parallel scanning writes per-thread temporary files that are merged after the scan. Thread count has no effect on results, only runtime.
 - **Weighted vs unweighted HI**: Weighted HI is preferred when blocks vary substantially in length (typical for phased local ancestry). Unweighted HI may be appropriate for evenly-spaced SNP data.
 - **LOCO and permutations**: When using `--hi-mode excl-focus` with `--permute`, HI components are re-used across permutations for efficiency; only the HI mapping to shuffled samples changes.
+- **`--msp` vs `--vcf`**: MSP input provides explicit block start/end positions, so block lengths for weighted HI are exact. VCF input infers lengths from consecutive positions (affected by `--pos-is-start`).
+- **`--cov` and LOCO**: `--cov` is incompatible with `--hi-mode excl-focus`. LOCO requires per-chromosome HI components derived from the block data itself and cannot be computed for externally supplied covariates.
+- **`--cov` missing data**: No missing values are permitted in the covariate file. All samples in the input must be present.

@@ -287,62 +287,80 @@ Eigen::VectorXf hi_from_components_weighted_excluding(
 	return h;
 }
 
-bool load_hi_tsv(
+bool load_cov_tsv(
 	const std::string& path,
 	const std::vector<std::string>& sample_names,
-	Eigen::VectorXf& h_out
+	Eigen::MatrixXf& H_out
 ) {
 	std::ifstream in(path);
 	if (!in) {
-		std::cerr << "Error: cannot open HI file: " << path << "\n";
+		std::cerr << "Error: cannot open covariate file: " << path << "\n";
 		return false;
 	}
 
 	int nsamples = (int)sample_names.size();
+	int ncols = -1;
 
-	std::unordered_map<std::string, float> m;
+	std::unordered_map<std::string, std::vector<float>> m;
 	m.reserve((size_t)nsamples * 2);
 
 	std::string line;
 	while (std::getline(in, line)) {
-		if (line.size() == 0) continue;
-		if (line[0] == '#') continue;
+		if (line.empty() || line[0] == '#') continue;
 
 		std::istringstream ss(line);
 		std::string sample;
-		std::string hi_str;
+		if (!(ss >> sample)) continue;
 
-		if (!(ss >> sample >> hi_str))
-			continue;
-
-		try {
-			float hi = std::stof(hi_str);
-			m[sample] = hi;
-		} catch (...) {
-			// Allows header lines like "sample hi"
-			continue;
+		std::vector<float> vals;
+		std::string tok;
+		while (ss >> tok) {
+			try {
+				vals.push_back(std::stof(tok));
+			} catch (...) {
+				vals.clear();
+				break;  // non-numeric token: header line
+			}
 		}
+		if (vals.empty()) continue;
+
+		if (ncols == -1) {
+			ncols = (int)vals.size();
+		} else if ((int)vals.size() != ncols) {
+			std::cerr << "Error: covariate file has inconsistent column count at sample: "
+			          << sample << " (expected " << ncols << ", got " << vals.size() << ")\n";
+			return false;
+		}
+
+		m[sample] = std::move(vals);
 	}
 
-	h_out.resize(nsamples);
+	if (ncols <= 0) {
+		std::cerr << "Error: no data rows found in covariate file: " << path << "\n";
+		return false;
+	}
+
+	H_out.resize(nsamples, ncols);
 
 	int missing = 0;
 	for (int i = 0; i < nsamples; ++i) {
 		auto it = m.find(sample_names[i]);
 		if (it == m.end()) {
-			h_out(i) = std::numeric_limits<float>::quiet_NaN();
 			++missing;
 		} else {
-			h_out(i) = it->second;
+			for (int j = 0; j < ncols; ++j)
+				H_out(i, j) = it->second[j];
 		}
 	}
 
 	if (missing > 0) {
-		std::cerr << "Error: HI file missing " << missing << " / " << nsamples
-				  << " samples (must contain all samples).\n";
+		std::cerr << "Error: covariate file missing " << missing << " / " << nsamples
+		          << " samples (must contain all samples).\n";
 		return false;
 	}
 
+	std::cout << "Loaded covariate matrix: " << nsamples << " samples x " << ncols
+	          << " covariate" << (ncols > 1 ? "s" : "") << " from: " << path << "\n";
 	return true;
 }
 

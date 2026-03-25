@@ -48,11 +48,11 @@ static void usage() {
 		<< "  --max-dist INT         Intra only: max end-distance (bp) between block pairs\n"
 		<< "  --max-windows N        Load at most N blocks from the VCF (used solely for test runs and debugging)\n"
 		<< "  --min-callrate FLOAT   Minimum block call rate; values <1.0 enable within-block mean imputation (beta; might introduce bias).\n"
-		<< "  --hi FILE              User provided hybrid index file (TSV: sample<TAB>hi; global HI only)\n"
-		<< "  --hi-mode STR          HI correction: global (default) | excl-focus (LOCO/LOCO2)\n"
-		<< "  --compute-hi           Compute HI using FILTERED blocks only, write out.hi.tsv, and exit (no scans)\n"
-		<< "  --unweighted-hi        Use unweighted HI (mean(dosage)/2; legacy behavior)\n"
-		<< "  --pos-is-start         For weighted HI: interpret VCF block pos as START (default assumes END)\n"
+		<< "  --cov FILE             Covariate file (TSV: for HI: sample<TAB>hi; For more covariates (PCA etc...) sample<TAB>cov1 [cov2 ...]; header optional); overrides computed HI\n"
+		<< "  --hi-mode STR          HI correction: global (default) | excl-focus (LOCO/LOCO2; incompatible with --cov)\n"
+		<< "  --compute-hi           Compute HI using FILTERED blocks only, write out.hi.tsv, and exit (ignored with --cov)\n"
+		<< "  --unweighted-hi        Use unweighted HI (mean(dosage)/2; legacy behavior; ignored with --cov)\n"
+		<< "  --pos-is-start         For weighted HI: interpret VCF block pos as START (ignored with --cov)\n"
 		<< "  --tile-size INT		 tile size for processing (default: 1024)\n"
 		<< "  --threads INT          Number of OpenMP threads for scan steps (default: 1)\n"
 		<< "  --distrib              Write empirical scan distribution summary\n"
@@ -72,7 +72,7 @@ struct CliOptions {
 	std::string vcf_path;
 	std::string msp_path;
 	std::string out;
-	std::string hi_path;
+	std::string cov_path;
 
 	std::vector<std::string> keep_chrs;
 	std::vector<std::string> drop_chrs;
@@ -145,8 +145,8 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--min-callrate" && i + 1 < argc) {
 			opt.min_callrate = std::stod(argv[++i]);
 
-		} else if (a == "--hi" && i + 1 < argc) {
-			opt.hi_path = argv[++i];
+		} else if (a == "--cov" && i + 1 < argc) {
+			opt.cov_path = argv[++i];
 
 		} else if (a == "--hi-mode" && i + 1 < argc) {
 			opt.hi_mode = argv[++i];
@@ -241,9 +241,18 @@ static int validate_options(const CliOptions& opt) {
 		return 2;
 	}
 
-	if (opt.compute_hi_only && !opt.hi_path.empty()) {
-		std::cerr << "Error: --compute-hi computes HI from blocks; do not combine with --hi\n";
+	if (!opt.cov_path.empty() && opt.hi_mode == "excl-focus") {
+		std::cerr << "Error: --hi-mode excl-focus is incompatible with --cov (LOCO requires internally computed per-chromosome HI)\n";
 		return 2;
+	}
+
+	if (!opt.cov_path.empty()) {
+		if (opt.compute_hi_only)
+			std::cerr << "Warning: --compute-hi is ignored when --cov is provided\n";
+		if (opt.unweighted_hi)
+			std::cerr << "Warning: --unweighted-hi is ignored when --cov is provided\n";
+		if (opt.pos_is_start)
+			std::cerr << "Warning: --pos-is-start is ignored when --cov is provided\n";
 	}
 
 	if (opt.compute_hi_only && opt.hi_mode != "global") {
@@ -522,9 +531,8 @@ static void build_blocks_by_chr_sorted(
 	}
 }
 
-static bool compute_or_load_hi(
+static bool compute_hi(
 	Eigen::VectorXf& h,
-	const WindowMatrix& wm,
 	const Eigen::MatrixXf& X,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
@@ -537,11 +545,6 @@ static bool compute_or_load_hi(
 ) {
 	// Default: compute HI on full (unfiltered) set for stable ancestry covariate.
 	// --compute-hi: compute HI on the filtered block set, then exit (utility mode).
-	if (!opt.hi_path.empty()) {
-		std::cout << "Using HI from file: " << opt.hi_path << "\n";
-		return load_hi_tsv(opt.hi_path, wm.sample_names, h);
-	}
-
 	const Eigen::MatrixXf& X_hi = opt.compute_hi_only ? X : X_full;
 	const std::vector<std::string>& chroms_hi = opt.compute_hi_only ? chroms : chroms_full;
 	const std::vector<int>& pos_hi = opt.compute_hi_only ? pos : pos_full;
@@ -668,11 +671,11 @@ static int resolve_target_block(
 static bool residualize_blocks(
 	Eigen::MatrixXf& Z,
 	const Eigen::MatrixXf& X,
-	const Eigen::VectorXf& h,
+	const Eigen::MatrixXf& H,
 	int& n_valid_blocks
 ) {
 	try {
-		Z = residualize_and_zscore(X, h, n_valid_blocks);
+		Z = residualize_and_zscore(X, H, n_valid_blocks);
 	} catch (const std::exception& e) {
 		std::cerr << "Error: " << e.what() << "\n";
 		return false;
@@ -834,18 +837,28 @@ int main(int argc, char** argv) {
 	build_blocks_by_chr_sorted(chroms, pos, blocks_by_chr, chr_order);
 	std::cout << "Chromosomes in loaded blocks: " << chr_order.size() << "\n";
 
-	// Stage 5: Compute/load hybrid index
-	Eigen::VectorXf h;
-	if (!compute_or_load_hi(h, wm, X, chroms, pos, pos_start, X_full, chroms_full, pos_full, pos_start_full, cli))
-		return 1;
+	// Stage 5: Compute HI from blocks or load covariate matrix from --cov
+	Eigen::MatrixXf H;
 
-	std::string hi_out_path = cli.out + ".hi.tsv";
-	if (!write_hi_and_print_summary(hi_out_path, wm, h, cli))
-		return 1;
+	if (!cli.cov_path.empty()) {
+		if (!load_cov_tsv(cli.cov_path, wm.sample_names, H))
+			return 1;
+	} else {
+		Eigen::VectorXf h;
+		if (!compute_hi(h, X, chroms, pos, pos_start, X_full, chroms_full, pos_full, pos_start_full, cli))
+			return 1;
 
-	if (cli.compute_hi_only) {
-		std::cout << "--compute-hi set: exiting after HI computation (no scans)\n";
-		return 0;
+		std::string hi_out_path = cli.out + ".hi.tsv";
+		if (!write_hi_and_print_summary(hi_out_path, wm, h, cli))
+			return 1;
+
+		if (cli.compute_hi_only) {
+			std::cout << "--compute-hi set: exiting after HI computation (no scans)\n";
+			return 0;
+		}
+
+		H.resize(h.size(), 1);
+		H.col(0) = h;
 	}
 
 	// Stage 6: Build HI components for excl-focus mode (full genome)
@@ -883,7 +896,7 @@ int main(int argc, char** argv) {
 
 		if (cli.hi_mode == "global") {
 			try {
-				gZ = residualize_and_zscore_vector(g, h, g_valid);
+				gZ = residualize_and_zscore_vector(g, H, g_valid);
 			} catch (const std::exception& e) {
 				std::cerr << "Error: sample-geno residualization failed: "
 					<< e.what() << "\n";
@@ -901,7 +914,7 @@ int main(int argc, char** argv) {
 	Eigen::MatrixXf Z;
 	int n_valid_blocks = 0;
 
-	if (!residualize_blocks(Z, X, h, n_valid_blocks))
+	if (!residualize_blocks(Z, X, H, n_valid_blocks))
 		return 1;
 
 	std::cout << "Residualization complete:\n";

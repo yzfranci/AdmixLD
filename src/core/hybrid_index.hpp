@@ -51,11 +51,13 @@ Eigen::VectorXf hi_from_components_weighted_excluding(
 	const std::string& exclude_chrB = ""
 );
 
-// Load hybrid index from TSV: sample<TAB>hi (header allowed). Requires all samples.
-bool load_hi_tsv(
+// Load covariate matrix from TSV: sample<TAB>cov1 [<TAB>cov2 ...] (header allowed).
+// Number of covariate columns is inferred from the first data row.
+// Requires all samples to be present; no missing values allowed.
+bool load_cov_tsv(
 	const std::string& path,
 	const std::vector<std::string>& sample_names,
-	Eigen::VectorXf& h_out
+	Eigen::MatrixXf& H_out
 );
 
 // Write hybrid index to TSV: sample<TAB>hi
