@@ -31,14 +31,28 @@ WindowMatrix load_windows_from_vcf(
 	for (int i = 0; i < nsamples; ++i)
 		out.sample_names.emplace_back(hdr->samples[i]);
 
+	out.nsamples_diploid = nsamples;
+	out.phased = opt.phased;
+
 	int ds_id = bcf_hdr_id2int(hdr, BCF_DT_ID, "DS");
 	int gt_id = bcf_hdr_id2int(hdr, BCF_DT_ID, "GT");
 	bool has_ds = (ds_id >= 0);
 	bool has_gt = (gt_id >= 0);
-	if (!has_ds && !has_gt) {
-		bcf_hdr_destroy(hdr);
-		bcf_close(fp);
-		throw std::runtime_error("VCF has neither DS nor GT FORMAT");
+
+	if (opt.phased) {
+		if (!has_gt) {
+			bcf_hdr_destroy(hdr);
+			bcf_close(fp);
+			throw std::runtime_error("VCF has no GT FORMAT field; --phased requires GT");
+		}
+		if (has_ds)
+			std::cerr << "Warning: --phased ignores DS field and uses GT instead\n";
+	} else {
+		if (!has_ds && !has_gt) {
+			bcf_hdr_destroy(hdr);
+			bcf_close(fp);
+			throw std::runtime_error("VCF has neither DS nor GT FORMAT");
+		}
 	}
 
 	// ---- Apply hard cap on number of windows to load ----
@@ -46,7 +60,8 @@ WindowMatrix load_windows_from_vcf(
 	if (max_windows_load <= 0 || max_windows_load > ADMIXLD_HARD_MAX_WINDOWS)
 		max_windows_load = ADMIXLD_HARD_MAX_WINDOWS;
 
-	out.X = Eigen::MatrixXf(nsamples, max_windows_load);
+	const int nrows = opt.phased ? 2 * nsamples : nsamples;
+	out.X = Eigen::MatrixXf(nrows, max_windows_load);
 	const float NA = std::numeric_limits<float>::quiet_NaN();
 
 	out.meta.chrom.reserve(max_windows_load);
@@ -64,7 +79,27 @@ WindowMatrix load_windows_from_vcf(
 		out.meta.chrom.emplace_back(chrom);
 		out.meta.pos.push_back(pos);
 
-		if (has_ds) {
+		if (opt.phased) {
+			int32_t* gt = nullptr;
+			int ngt = 0;
+			int ret = bcf_get_format_int32(hdr, rec, "GT", &gt, &ngt);
+			if (ret <= 0 || ngt < 2 * nsamples) {
+				out.X.col(nwin).setConstant(NA);
+			} else {
+				for (int i = 0; i < nsamples; ++i) {
+					int g0 = gt[2 * i];
+					int g1 = gt[2 * i + 1];
+					if (g0 == bcf_gt_missing || g1 == bcf_gt_missing) {
+						out.X(2 * i,     nwin) = NA;
+						out.X(2 * i + 1, nwin) = NA;
+					} else {
+						out.X(2 * i,     nwin) = (float)bcf_gt_allele(g0);
+						out.X(2 * i + 1, nwin) = (float)bcf_gt_allele(g1);
+					}
+				}
+			}
+			free(gt);
+		} else if (has_ds) {
 			float* ds = nullptr;
 			int nds = 0;
 			int ret = bcf_get_format_float(hdr, rec, "DS", &ds, &nds);

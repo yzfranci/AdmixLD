@@ -11,7 +11,9 @@ struct WindowMeta {
 };
 
 struct WindowMatrix {
-	Eigen::MatrixXf X;	// nsamples × nwin (raw DS/GT dosage)
+	Eigen::MatrixXf X;	// nrows × nwin; nrows = nsamples (diploid) or 2*nsamples (phased)
 	WindowMeta meta;
-	std::vector<std::string> sample_names;
+	std::vector<std::string> sample_names;	// always diploid sample names (length = nsamples_diploid)
+	bool phased = false;
+	int nsamples_diploid = 0;	// number of diploid samples; X.rows() == (phased ? 2 : 1) * nsamples_diploid
 };

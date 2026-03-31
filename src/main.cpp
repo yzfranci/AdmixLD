@@ -11,6 +11,7 @@
 #include <sstream>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "io/vcf_windows.hpp"
 #include "io/msp_windows.hpp"
@@ -45,6 +46,7 @@ static void usage() {
 		<< "  --min-neg-r FLOAT      Keep pairs with r <= -value (asymmetric)\n"
 		<< "  --min-pos-r FLOAT      Keep pairs with r >= value (asymmetric)\n"
 		<< "  --intra                Scan intrachromosomal pairs (default: interchrom only)\n"
+		<< "  --phased               Use phased haplotypes (2n rows); requires --intra; MSP/VCF GT only\n"
 		<< "  --max-dist INT         Intra only: max end-distance (bp) between block pairs\n"
 		<< "  --max-windows N        Load at most N blocks from the VCF (used solely for test runs and debugging)\n"
 		<< "  --min-callrate FLOAT   Minimum block call rate; values <1.0 enable within-block mean imputation (beta; might introduce bias).\n"
@@ -65,7 +67,8 @@ static void usage() {
 		<< "  --bed FILE             Keep blocks whose position is within BED intervals (chr start end; no header)\n"
 		<< "  --target-chr STR       Scan one target block/pos vs all others (target chromosome)\n"
 		<< "  --target-pos INT       Scan one target block/pos vs all others (target position; matches single position)\n"
-		<< "  --sample-geno FILE     Per-sample numeric mito haplotype/genotype/trait TSV: sample<TAB>value\n";
+		<< "  --sample-geno FILE     Per-sample numeric mito haplotype/genotype/trait TSV: sample<TAB>value\n"
+	<< "  --keep-indv FILE       Keep only samples listed in FILE (one ID per line)\n";
 }
 
 struct CliOptions {
@@ -84,6 +87,7 @@ struct CliOptions {
 	int target_pos = -1;
 
 	std::string sample_geno_path;
+	std::string keep_indv_path;
 
 	std::string hi_mode = "global";	// global | excl-focus
 
@@ -92,6 +96,7 @@ struct CliOptions {
 	bool pos_is_start = false;
 
 	bool intra = false;
+	bool phased = false;
 	int max_dist = -1;
 	int max_windows = -1;	// <=0 means loader default cap
 	double min_callrate = 1.0;	// fraction in [0,1]
@@ -135,6 +140,9 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 
 		} else if (a == "--intra") {
 			opt.intra = true;
+
+		} else if (a == "--phased") {
+			opt.phased = true;
 
 		} else if (a == "--max-dist" && i + 1 < argc) {
 			opt.max_dist = std::stoi(argv[++i]);
@@ -201,6 +209,9 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--sample-geno" && i + 1 < argc) {
 			opt.sample_geno_path = argv[++i];
 
+		} else if (a == "--keep-indv" && i + 1 < argc) {
+			opt.keep_indv_path = argv[++i];
+
 		} else if (a == "--min-neg-r" && i + 1 < argc) {
 			opt.min_neg_r = std::stof(argv[++i]);
 			opt.has_min_neg_r = true;
@@ -243,6 +254,21 @@ static int validate_options(const CliOptions& opt) {
 
 	if (!opt.cov_path.empty() && opt.hi_mode == "excl-focus") {
 		std::cerr << "Error: --hi-mode excl-focus is incompatible with --cov (LOCO requires internally computed per-chromosome HI)\n";
+		return 2;
+	}
+
+	if (opt.phased && !opt.intra) {
+		std::cerr << "Error: --phased requires --intra (phased LD is only meaningful for intrachromosomal pairs)\n";
+		return 2;
+	}
+
+	if (opt.phased && opt.hi_mode == "excl-focus") {
+		std::cerr << "Error: --phased is incompatible with --hi-mode excl-focus\n";
+		return 2;
+	}
+
+	if (opt.phased && !opt.sample_geno_path.empty()) {
+		std::cerr << "Error: --phased is incompatible with --sample-geno\n";
 		return 2;
 	}
 
@@ -326,7 +352,7 @@ static bool apply_block_filters(
 	const std::vector<std::string>& sample_names,
 	const CliOptions& opt
 ) {
-	const int nsamples = (int)sample_names.size();
+	const int nrows = (int)X.rows();	// may be 2*nsamples in phased mode
 	int nwin = (int)chroms.size();
 
 	// Filters are applied before residualization so downstream matrices match the scanned block set.
@@ -383,7 +409,7 @@ static bool apply_block_filters(
 	std::cout << "  after  = " << (int)keep_idx.size() << "\n";
 
 	int nwin2 = (int)keep_idx.size();
-	Eigen::MatrixXf Xf(nsamples, nwin2);
+	Eigen::MatrixXf Xf(nrows, nwin2);
 	std::vector<std::string> chroms_f((size_t)nwin2);
 	std::vector<int> pos_f((size_t)nwin2);
 
@@ -416,25 +442,25 @@ static bool apply_callrate_filter(
 	const std::vector<std::string>& sample_names,
 	double min_callrate
 ) {
-	const int nsamples = (int)sample_names.size();
+	const int nrows = (int)X.rows();	// may be 2*nsamples in phased mode
 	int nblocks = (int)chroms.size();
 
 	if (nblocks == 0)
 		return true;
 
 	// Default is 1.0, which matches current strict behavior.
-	// If set < 1.0, we keep blocks called in at least that fraction of samples.
+	// If set < 1.0, we keep blocks called in at least that fraction of rows.
 	if (min_callrate >= 1.0)
 		return true;
 
-	const int min_called = (int)std::ceil(min_callrate * (double)nsamples);
+	const int min_called = (int)std::ceil(min_callrate * (double)nrows);
 
 	std::vector<int> keep_idx;
 	keep_idx.reserve((size_t)nblocks);
 
 	for (int w = 0; w < nblocks; ++w) {
 		int called = 0;
-		for (int i = 0; i < nsamples; ++i) {
+		for (int i = 0; i < nrows; ++i) {
 			float v = X(i, w);
 			if (!std::isnan(v))
 				++called;
@@ -456,12 +482,12 @@ static bool apply_callrate_filter(
 
 	std::cout << "Call-rate filter (--min-callrate):\n";
 	std::cout << "  min_callrate = " << min_callrate << "\n";
-	std::cout << "  min_called   = " << min_called << " / " << nsamples << "\n";
+	std::cout << "  min_called   = " << min_called << " / " << nrows << "\n";
 	std::cout << "  before       = " << nblocks << "\n";
 	std::cout << "  after        = " << (int)keep_idx.size() << "\n";
 
 	const int nblocks2 = (int)keep_idx.size();
-	Eigen::MatrixXf Xf(nsamples, nblocks2);
+	Eigen::MatrixXf Xf(nrows, nblocks2);
 	std::vector<std::string> chroms_f((size_t)nblocks2);
 	std::vector<int> pos_f((size_t)nblocks2);
 
@@ -555,15 +581,18 @@ static bool compute_hi(
 	else
 		std::cout << "Computing HI from full block set (independent of --chr/--no-chr/--bed)\n";
 
+	const int n_diploid = opt.phased ? (int)X_hi.rows() / 2 : (int)X_hi.rows();
 	if (opt.unweighted_hi) {
-		h = compute_hi_from_X(X_hi);
+		h = compute_hi_from_X(X_hi, opt.phased, n_diploid);
 	} else {
 		h = compute_hi_from_X_weighted(
 			X_hi,
 			chroms_hi,
 			pos_hi,
 			opt.pos_is_start,
-			pos_start_hi
+			pos_start_hi,
+			opt.phased,
+			n_diploid
 		);
 	}
 
@@ -683,9 +712,10 @@ static bool residualize_blocks(
 	return true;
 }
 
-static void print_residualization_sanity(const Eigen::MatrixXf& Z, int nsamples) {
+static void print_residualization_sanity(const Eigen::MatrixXf& Z) {
+	const int nrows = (int)Z.rows();
 	auto is_block_valid = [&](int w) -> bool {
-		for (int i = 0; i < nsamples; ++i) {
+		for (int i = 0; i < nrows; ++i) {
 			if (std::isnan(Z(i, w))) return false;
 		}
 		return true;
@@ -694,9 +724,9 @@ static void print_residualization_sanity(const Eigen::MatrixXf& Z, int nsamples)
 	const int nblocks = (int)Z.cols();
 	if (nblocks >= 2 && is_block_valid(0) && is_block_valid(1)) {
 		double dot = 0.0;
-		for (int i = 0; i < nsamples; ++i)
+		for (int i = 0; i < nrows; ++i)
 			dot += (double)Z(i, 0) * (double)Z(i, 1);
-		double r = dot / (nsamples - 1);
+		double r = dot / (nrows - 1);
 		std::cout << "  sanity r(Z_b0, Z_b1) = " << r << "\n";
 	} else {
 		std::cout << "  sanity r(Z_b0, Z_b1) skipped (invalid block or <2 blocks)\n";
@@ -727,6 +757,76 @@ static void write_perm_summary_tsv(
 			<< "\t" << summ[r].sd_r2
 			<< "\n";
 	}
+}
+
+static bool apply_sample_filter(WindowMatrix& wm, const std::string& keep_indv_path) {
+	std::ifstream f(keep_indv_path);
+	if (!f) {
+		std::cerr << "Error: cannot open --keep-indv file: " << keep_indv_path << "\n";
+		return false;
+	}
+
+	std::unordered_set<std::string> keep_set;
+	std::string line;
+	while (std::getline(f, line)) {
+		while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+			line.pop_back();
+		if (!line.empty())
+			keep_set.insert(line);
+	}
+
+	if (keep_set.empty()) {
+		std::cerr << "Error: --keep-indv file has no valid IDs.\n";
+		return false;
+	}
+
+	const int n_dip = wm.nsamples_diploid;
+	std::vector<int> keep_idx;
+	keep_idx.reserve((size_t)n_dip);
+
+	for (int i = 0; i < n_dip; ++i) {
+		if (keep_set.count(wm.sample_names[i]))
+			keep_idx.push_back(i);
+	}
+
+	if (keep_idx.empty()) {
+		std::cerr << "Error: no samples remain after --keep-indv filtering.\n";
+		return false;
+	}
+
+	const int n_keep = (int)keep_idx.size();
+
+	std::cout << "Sample filter (--keep-indv):\n";
+	std::cout << "  requested = " << keep_set.size() << "\n";
+	std::cout << "  matched   = " << n_keep << " / " << n_dip << "\n";
+
+	if (n_keep == n_dip)
+		return true;
+
+	const int nwin = (int)wm.X.cols();
+
+	if (!wm.phased) {
+		Eigen::MatrixXf Xf(n_keep, nwin);
+		for (int i = 0; i < n_keep; ++i)
+			Xf.row(i) = wm.X.row(keep_idx[i]);
+		wm.X = std::move(Xf);
+	} else {
+		Eigen::MatrixXf Xf(2 * n_keep, nwin);
+		for (int i = 0; i < n_keep; ++i) {
+			Xf.row(2 * i)     = wm.X.row(2 * keep_idx[i]);
+			Xf.row(2 * i + 1) = wm.X.row(2 * keep_idx[i] + 1);
+		}
+		wm.X = std::move(Xf);
+	}
+
+	std::vector<std::string> names_f;
+	names_f.reserve((size_t)n_keep);
+	for (int i : keep_idx)
+		names_f.push_back(wm.sample_names[i]);
+	wm.sample_names = std::move(names_f);
+	wm.nsamples_diploid = n_keep;
+
+	return true;
 }
 
 static bool make_asym_flags(
@@ -778,16 +878,26 @@ int main(int argc, char** argv) {
 		if (!cli.vcf_path.empty()) {
 			VcfLoadOptions vopt;
 			vopt.max_windows = max_win;
+			vopt.phased = cli.phased;
 			wm = load_windows_from_vcf(cli.vcf_path, vopt);
 		} else {
 			if (cli.pos_is_start)
 				std::cerr << "Warning: --pos-is-start has no effect with --msp (exact block lengths are used).\n";
 			MspLoadOptions mopt;
 			mopt.max_windows = max_win;
+			mopt.phased = cli.phased;
 			wm = load_windows_from_msp(cli.msp_path, mopt);
 		}
 	}
-	const int nsamples = (int)wm.sample_names.size();
+
+	// Stage 2b: Apply optional sample filter (before X/X_full split)
+	if (!cli.keep_indv_path.empty()) {
+		if (!apply_sample_filter(wm, cli.keep_indv_path))
+			return 1;
+	}
+
+	const int nsamples_diploid = wm.nsamples_diploid;
+	const int nsamples = (int)wm.sample_names.size();	// diploid sample count for HI output / reporting
 
 	Eigen::MatrixXf X = wm.X;
 	Eigen::MatrixXf X_full = X;
@@ -822,7 +932,8 @@ int main(int argc, char** argv) {
 	else
 		std::cout << "  msp        = " << cli.msp_path << "\n";
 	std::cout << "  out        = " << cli.out << "\n";
-	std::cout << "  nsamples   = " << nsamples << "\n";
+	std::cout << "  nsamples   = " << nsamples_diploid
+		<< (cli.phased ? " (phased: " + std::to_string(2 * nsamples_diploid) + " haplotype rows)" : "") << "\n";
 	std::cout << "  blocks     = " << nblocks << "\n";
 	std::cout << "HI correction mode: " << cli.hi_mode << "\n";
 
@@ -859,6 +970,17 @@ int main(int argc, char** argv) {
 
 		H.resize(h.size(), 1);
 		H.col(0) = h;
+	}
+
+	// In phased mode, duplicate H rows so H.rows() == X.rows() == 2*nsamples_diploid
+	if (cli.phased) {
+		const int k = (int)H.cols();
+		Eigen::MatrixXf H2(2 * nsamples_diploid, k);
+		for (int i = 0; i < nsamples_diploid; ++i) {
+			H2.row(2 * i)     = H.row(i);
+			H2.row(2 * i + 1) = H.row(i);
+		}
+		H = std::move(H2);
 	}
 
 	// Stage 6: Build HI components for excl-focus mode (full genome)
@@ -919,7 +1041,7 @@ int main(int argc, char** argv) {
 
 	std::cout << "Residualization complete:\n";
 	std::cout << "  valid_blocks = " << n_valid_blocks << " / " << nblocks << "\n";
-	print_residualization_sanity(Z, nsamples);
+	print_residualization_sanity(Z);
 	std::cout << std::flush;
 
 	// Stage 10: Scan options for permutations (symmetric only)
@@ -927,7 +1049,7 @@ int main(int argc, char** argv) {
 	popt.intra = cli.intra;
 	popt.max_dist = cli.max_dist;
 	popt.tile_size = cli.tile_size;
-	popt.nsamples = nsamples;
+	popt.nsamples = (int)Z.rows();
 	popt.threads = cli.threads;
 	popt.min_abs_r = (float)cli.min_abs_r;
 	popt.use_asym = false;
@@ -1048,7 +1170,7 @@ int main(int argc, char** argv) {
 	opt.intra = cli.intra;
 	opt.max_dist = cli.max_dist;
 	opt.tile_size = cli.tile_size;
-	opt.nsamples = nsamples;
+	opt.nsamples = (int)Z.rows();
 	opt.threads = cli.threads;
 	opt.min_abs_r = (float)cli.min_abs_r;
 	opt.use_asym = use_asym;

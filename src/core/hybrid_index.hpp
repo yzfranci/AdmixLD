@@ -4,9 +4,15 @@
 #include <string>
 #include <vector>
 
-// Compute hybrid index from X (dosage 0/1/2) as mean(dosage)/2 per sample, ignoring NaNs
+// Compute hybrid index from X as mean(dosage)/2 per sample, ignoring NaNs.
+// Diploid mode (phased=false): X is nsamples x nwin, values in [0,2].
+// Phased mode (phased=true):   X is 2*nsamples x nwin, values in {0,1};
+//   rows 2i and 2i+1 are the two haplotypes of sample i.
+//   nsamples_diploid must equal nsamples when phased=true.
 Eigen::VectorXf compute_hi_from_X(
-	const Eigen::MatrixXf& X
+	const Eigen::MatrixXf& X,
+	bool phased = false,
+	int nsamples_diploid = 0
 );
 
 // Weighted HI using block lengths per chromosome.
@@ -15,12 +21,15 @@ Eigen::VectorXf compute_hi_from_X(
 //   pos_is_start=false (default): pos is END, len[k] = pos[k] - pos[k-1]
 //   pos_is_start=true:            pos is START, len[k] = pos[k+1] - pos[k]
 // Uses weights only for non-missing genotypes in X.
+// phased/nsamples_diploid: same semantics as compute_hi_from_X.
 Eigen::VectorXf compute_hi_from_X_weighted(
 	const Eigen::MatrixXf& X,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
 	bool pos_is_start,
-	const std::vector<int>& pos_start = {}
+	const std::vector<int>& pos_start = {},
+	bool phased = false,
+	int nsamples_diploid = 0
 );
 
 struct HiComponentsWeighted {

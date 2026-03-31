@@ -9,11 +9,33 @@
 #include <algorithm>
 
 Eigen::VectorXf compute_hi_from_X(
-	const Eigen::MatrixXf& X
+	const Eigen::MatrixXf& X,
+	bool phased,
+	int nsamples_diploid
 ) {
-	int nsamples = (int)X.rows();
 	int nwin = (int)X.cols();
 
+	if (phased) {
+		Eigen::VectorXf h(nsamples_diploid);
+		for (int i = 0; i < nsamples_diploid; ++i) {
+			double sum = 0.0;
+			int count = 0;
+			for (int w = 0; w < nwin; ++w) {
+				float v0 = X(2 * i,     w);
+				float v1 = X(2 * i + 1, w);
+				if (!std::isnan(v0) && !std::isnan(v1)) {
+					sum += (double)v0 + (double)v1;
+					++count;
+				}
+			}
+			h(i) = (count == 0)
+				? std::numeric_limits<float>::quiet_NaN()
+				: (float)((sum / count) / 2.0);
+		}
+		return h;
+	}
+
+	int nsamples = (int)X.rows();
 	Eigen::VectorXf h(nsamples);
 
 	for (int i = 0; i < nsamples; ++i) {
@@ -127,21 +149,44 @@ Eigen::VectorXf compute_hi_from_X_weighted(
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
 	bool pos_is_start,
-	const std::vector<int>& pos_start
+	const std::vector<int>& pos_start,
+	bool phased,
+	int nsamples_diploid
 ) {
-	int nsamples = (int)X.rows();
 	int nwin = (int)X.cols();
-
-	Eigen::VectorXf h(nsamples);
 
 	if ((int)chroms.size() != nwin || (int)pos.size() != nwin) {
 		std::cerr << "Warning: weighted HI requested but chrom/pos size mismatch; falling back to unweighted HI.\n";
-		return compute_hi_from_X(X);
+		return compute_hi_from_X(X, phased, nsamples_diploid);
 	}
 
 	std::vector<float> wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
 		? compute_block_lengths_from_range_msp(pos_start, pos)
 		: infer_block_lengths(chroms, pos, pos_is_start);
+
+	if (phased) {
+		Eigen::VectorXf h(nsamples_diploid);
+		for (int i = 0; i < nsamples_diploid; ++i) {
+			double wsum = 0.0;
+			double wtot = 0.0;
+			for (int w = 0; w < nwin; ++w) {
+				float v0 = X(2 * i,     w);
+				float v1 = X(2 * i + 1, w);
+				if (!std::isnan(v0) && !std::isnan(v1)) {
+					double L = (double)wlen[(size_t)w];
+					wsum += ((double)v0 + (double)v1) * L;
+					wtot += L;
+				}
+			}
+			h(i) = (wtot <= 0.0)
+				? std::numeric_limits<float>::quiet_NaN()
+				: (float)((wsum / wtot) / 2.0);
+		}
+		return h;
+	}
+
+	int nsamples = (int)X.rows();
+	Eigen::VectorXf h(nsamples);
 
 	for (int i = 0; i < nsamples; ++i) {
 		double wsum = 0.0;
