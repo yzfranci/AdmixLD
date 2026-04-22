@@ -1,5 +1,4 @@
 #include "vcf_windows.hpp"
-#include "../config.hpp"
 
 #include <htslib/hts.h>
 #include <htslib/vcf.h>
@@ -55,22 +54,26 @@ WindowMatrix load_windows_from_vcf(
 		}
 	}
 
-	// ---- Apply hard cap on number of windows to load ----
-	int max_windows_load = opt.max_windows;
-	if (max_windows_load <= 0 || max_windows_load > ADMIXLD_HARD_MAX_WINDOWS)
-		max_windows_load = ADMIXLD_HARD_MAX_WINDOWS;
+	const int max_windows_load = opt.max_windows;  // 0 = no limit
 
 	const int nrows = opt.phased ? 2 * nsamples : nsamples;
-	out.X = Eigen::MatrixXf(nrows, max_windows_load);
+	int capacity = (max_windows_load > 0) ? max_windows_load : 65536;
+	out.X = Eigen::MatrixXf(nrows, capacity);
 	const float NA = std::numeric_limits<float>::quiet_NaN();
 
-	out.meta.chrom.reserve(max_windows_load);
-	out.meta.pos.reserve(max_windows_load);
+	if (max_windows_load > 0) {
+		out.meta.chrom.reserve(max_windows_load);
+		out.meta.pos.reserve(max_windows_load);
+	}
 
 	bcf1_t* rec = bcf_init();
 	int nwin = 0;
 
-	while (bcf_read(fp, hdr, rec) == 0 && nwin < max_windows_load) {
+	while (bcf_read(fp, hdr, rec) == 0 && (max_windows_load <= 0 || nwin < max_windows_load)) {
+		if (nwin == capacity) {
+			capacity *= 2;
+			out.X.conservativeResize(Eigen::NoChange, capacity);
+		}
 		bcf_unpack(rec, BCF_UN_STR);
 
 		const char* chrom = bcf_hdr_id2name(hdr, rec->rid);
@@ -139,12 +142,8 @@ WindowMatrix load_windows_from_vcf(
 		++nwin;
 	}
 
-	// If we hit the cap, warn that remaining records were not read
-	if (nwin == max_windows_load) {
-		std::cerr
-			<< "Warning: reached window cap (" << max_windows_load << "). "
-			<< "Remaining VCF records were not read.\n";
-	}
+	if (max_windows_load > 0 && nwin == max_windows_load)
+		std::cerr << "Warning: reached --max-windows limit (" << max_windows_load << "); remaining VCF records were not read.\n";
 
 	bcf_destroy(rec);
 	bcf_hdr_destroy(hdr);

@@ -1,5 +1,4 @@
 #include "msp_windows.hpp"
-#include "../config.hpp"
 
 #include <cmath>
 #include <fstream>
@@ -62,22 +61,22 @@ WindowMatrix load_windows_from_msp(
 	out.nsamples_diploid = nsamples;
 	out.phased = opt.phased;
 
-	// Apply hard cap on number of windows to load
-	int max_windows_load = opt.max_windows;
-	if (max_windows_load <= 0 || max_windows_load > ADMIXLD_HARD_MAX_WINDOWS)
-		max_windows_load = ADMIXLD_HARD_MAX_WINDOWS;
+	const int max_windows_load = opt.max_windows;  // 0 = no limit
 
 	const int nrows = opt.phased ? 2 * nsamples : nsamples;
-	out.X = Eigen::MatrixXf(nrows, max_windows_load);
+	int capacity = (max_windows_load > 0) ? max_windows_load : 65536;
+	out.X = Eigen::MatrixXf(nrows, capacity);
 	const float NA = std::numeric_limits<float>::quiet_NaN();
 
-	out.meta.chrom.reserve((size_t)max_windows_load);
-	out.meta.pos.reserve((size_t)max_windows_load);
-	out.meta.pos_start.reserve((size_t)max_windows_load);
+	if (max_windows_load > 0) {
+		out.meta.chrom.reserve((size_t)max_windows_load);
+		out.meta.pos.reserve((size_t)max_windows_load);
+		out.meta.pos_start.reserve((size_t)max_windows_load);
+	}
 
 	int nwin = 0;
 
-	while (std::getline(in, line) && nwin < max_windows_load) {
+	while (std::getline(in, line) && (max_windows_load <= 0 || nwin < max_windows_load)) {
 		if (line.empty() || line[0] == '#')
 			continue;
 
@@ -91,6 +90,11 @@ WindowMatrix load_windows_from_msp(
 
 		if ((int)fields.size() < N_FIXED + n_hap_cols)
 			continue;	// skip malformed lines
+
+		if (nwin == capacity) {
+			capacity *= 2;
+			out.X.conservativeResize(Eigen::NoChange, capacity);
+		}
 
 		const std::string& chrom = fields[0];
 		int spos = std::stoi(fields[1]);
@@ -123,11 +127,8 @@ WindowMatrix load_windows_from_msp(
 		++nwin;
 	}
 
-	if (nwin == max_windows_load) {
-		std::cerr
-			<< "Warning: reached window cap (" << max_windows_load << "). "
-			<< "Remaining MSP records were not read.\n";
-	}
+	if (max_windows_load > 0 && nwin == max_windows_load)
+		std::cerr << "Warning: reached --max-windows limit (" << max_windows_load << "); remaining MSP records were not read.\n";
 
 	out.X.conservativeResize(Eigen::NoChange, nwin);
 	return out;

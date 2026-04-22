@@ -899,7 +899,7 @@ int main(int argc, char** argv) {
 	const int nsamples_diploid = wm.nsamples_diploid;
 	const int nsamples = (int)wm.sample_names.size();	// diploid sample count for HI output / reporting
 
-	Eigen::MatrixXf X = wm.X;
+	Eigen::MatrixXf X = std::move(wm.X);
 	Eigen::MatrixXf X_full = X;
 
 	std::vector<std::string> chroms = wm.meta.chrom;
@@ -935,6 +935,17 @@ int main(int argc, char** argv) {
 	std::cout << "  nsamples   = " << nsamples_diploid
 		<< (cli.phased ? " (phased: " + std::to_string(2 * nsamples_diploid) + " haplotype rows)" : "") << "\n";
 	std::cout << "  blocks     = " << nblocks << "\n";
+
+	{
+		const long long rows = (long long)(cli.phased ? 2 * nsamples_diploid : nsamples_diploid);
+		const long long est_gb_peak = (rows * (long long)nblocks * 4 * 2 + 500000000LL) / 1000000000LL;
+		if (nblocks > 1000000) {
+			std::cerr << "Warning: " << nblocks << " blocks x " << nsamples_diploid
+				<< " samples — estimated peak RAM ~" << est_gb_peak << " GB. "
+				<< "Ensure sufficient memory before proceeding.\n";
+		}
+	}
+
 	std::cout << "HI correction mode: " << cli.hi_mode << "\n";
 
 	int to_print = std::min(5, nsamples);
@@ -988,6 +999,7 @@ int main(int argc, char** argv) {
 	bool has_hc_full = false;
 	if (!build_hi_components_if_needed(hc_full, has_hc_full, X_full, chroms_full, pos_full, pos_start_full, cli))
 		return 2;
+	X_full.resize(0, 0);
 
 	// Stage 7: Resolve target block (after filtering)
 	int target_w = -1;
@@ -1038,6 +1050,7 @@ int main(int argc, char** argv) {
 
 	if (!residualize_blocks(Z, X, H, n_valid_blocks))
 		return 1;
+	X.resize(0, 0);
 
 	std::cout << "Residualization complete:\n";
 	std::cout << "  valid_blocks = " << n_valid_blocks << " / " << nblocks << "\n";
