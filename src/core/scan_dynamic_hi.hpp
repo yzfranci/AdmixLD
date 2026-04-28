@@ -6,10 +6,10 @@
 #include <vector>
 #include <cstdint>
 
-#include "scan_blocks.hpp"
+#include "scan_markers.hpp"
 #include "hybrid_index.hpp"
 
-bool scan_blocks_write_hits_excl_focus(
+bool scan_markers_write_hits_excl_focus(
 	const Eigen::MatrixXf& X_scan,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,
@@ -59,7 +59,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	uint64_t distrib_seed = 1
 );
 
-bool permute_interchrom_summary_chrblock_excl_focus(
+bool permute_interchrom_summary_chrmarker_excl_focus(
 	const Eigen::MatrixXf& X_scan,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,

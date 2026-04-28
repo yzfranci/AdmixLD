@@ -61,7 +61,7 @@ Eigen::VectorXf compute_hi_from_X(
 }
 
 // Compute exact tract lengths from MSP spos/epos columns.
-static std::vector<float> compute_block_lengths_from_range_msp(
+static std::vector<float> compute_tract_lengths_from_range_msp(
 	const std::vector<int>& pos_start,
 	const std::vector<int>& pos_end
 ) {
@@ -75,7 +75,7 @@ static std::vector<float> compute_block_lengths_from_range_msp(
 	return len;
 }
 
-static std::vector<float> infer_block_lengths(
+static std::vector<float> infer_tract_lengths(
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
 	bool pos_is_start
@@ -161,8 +161,8 @@ Eigen::VectorXf compute_hi_from_X_weighted(
 	}
 
 	std::vector<float> wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
-		? compute_block_lengths_from_range_msp(pos_start, pos)
-		: infer_block_lengths(chroms, pos, pos_is_start);
+		? compute_tract_lengths_from_range_msp(pos_start, pos)
+		: infer_tract_lengths(chroms, pos, pos_is_start);
 
 	if (phased) {
 		Eigen::VectorXf h(nsamples_diploid);
@@ -258,8 +258,8 @@ HiComponentsWeighted build_hi_components_weighted(
 	std::vector<float> wlen((size_t)nwin, 1.0f);
 	if ((int)chroms.size() == nwin && (int)pos.size() == nwin) {
 		wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
-			? compute_block_lengths_from_range_msp(pos_start, pos)
-			: infer_block_lengths(chroms, pos, pos_is_start);
+			? compute_tract_lengths_from_range_msp(pos_start, pos)
+			: infer_tract_lengths(chroms, pos, pos_is_start);
 	}
 
 	// Accumulate components

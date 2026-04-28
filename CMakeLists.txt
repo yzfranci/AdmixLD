@@ -23,7 +23,7 @@ add_executable(admixld
 	src/io/sample_vector.cpp
 	src/core/hybrid_index.cpp
 	src/core/residualize.cpp
-	src/core/scan_blocks.cpp
+	src/core/scan_markers.cpp
 	src/core/scan_dynamic_hi.cpp
 )
 

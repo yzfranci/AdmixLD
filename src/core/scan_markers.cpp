@@ -1,4 +1,4 @@
-#include "scan_blocks.hpp"
+#include "scan_markers.hpp"
 
 #include <cmath>
 #include <fstream>
@@ -55,7 +55,7 @@ static float quantile_from_sorted(
 	return (float)((1.0 - t) * v[i0] + t * v[i1]);
 }
 
-bool scan_blocks_write_hits(
+bool scan_markers_write_hits(
 	const Eigen::MatrixXf& Z,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
@@ -767,7 +767,7 @@ bool scan_target_write_hits(
 	return true;
 }
 
-bool permute_interchrom_summary_chrblock(
+bool permute_interchrom_summary_chrmarker(
 	const Eigen::MatrixXf& Z,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,

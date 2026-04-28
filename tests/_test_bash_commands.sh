@@ -103,9 +103,9 @@
 	--compute-hi
 
 ./build/admixld \
-	--vcf tests/data/orioles_HZ_multisys.master.vcf.2025.02.11.vcf.gz \
+	--vcf tests/data/Orioles_filtered_final_093020_55individuals.recode.vcf.gz \
 	--out test_missing \
-	--max-windows 1000 \
+	--max-windows 5000 \
 	--intra \
 	--min-callrate 0.9 \
 	--min-abs-r 0.4 \

@@ -46,7 +46,7 @@ struct ScanSummary {
 };
 
 
-bool scan_blocks_write_hits(
+bool scan_markers_write_hits(
 	const Eigen::MatrixXf& Z,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
@@ -78,7 +78,7 @@ struct PermSummary {
 };
 
 
-bool permute_interchrom_summary_chrblock(
+bool permute_interchrom_summary_chrmarker(
 	const Eigen::MatrixXf& Z,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
 	const std::vector<std::string>& chr_order,

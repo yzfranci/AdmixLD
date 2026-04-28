@@ -102,8 +102,8 @@ WindowMatrix load_windows_from_msp(
 		// fields[3]=sgpos, fields[4]=egpos, fields[5]=n_snps — not used
 
 		out.meta.chrom.emplace_back(chrom);
-		out.meta.pos.push_back(epos);        // pos = end of block (consistent with VCF convention)
-		out.meta.pos_start.push_back(spos);  // pos_start = start of block
+		out.meta.pos.push_back(epos);        // pos = end of tract (consistent with VCF marker-position field)
+		out.meta.pos_start.push_back(spos);  // pos_start = start of tract
 
 		for (int i = 0; i < nsamples; ++i) {
 			const std::string& v0 = fields[(size_t)(N_FIXED + 2 * i)];

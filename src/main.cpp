@@ -19,7 +19,7 @@
 #include "io/sample_vector.hpp"
 #include "core/hybrid_index.hpp"
 #include "core/residualize.hpp"
-#include "core/scan_blocks.hpp"
+#include "core/scan_markers.hpp"
 #include "core/scan_dynamic_hi.hpp"
 #include "config.hpp"
 
@@ -344,7 +344,7 @@ static void build_chr_maps(
 	}
 }
 
-static bool apply_block_filters(
+static bool apply_marker_filters(
 	Eigen::MatrixXf& X,
 	std::vector<std::string>& chroms,
 	std::vector<int>& pos,
@@ -404,7 +404,7 @@ static bool apply_block_filters(
 	if ((int)keep_idx.size() == nwin)
 		return true;
 
-	std::cout << "Filtering markerss:\n";
+	std::cout << "Filtering markers:\n";
 	std::cout << "  before = " << nwin << "\n";
 	std::cout << "  after  = " << (int)keep_idx.size() << "\n";
 
@@ -443,9 +443,9 @@ static bool apply_callrate_filter(
 	double min_callrate
 ) {
 	const int nrows = (int)X.rows();	// may be 2*nsamples in phased mode
-	int nblocks = (int)chroms.size();
+	int nmarkers = (int)chroms.size();
 
-	if (nblocks == 0)
+	if (nmarkers == 0)
 		return true;
 
 	// Default is 1.0, which matches current strict behavior.
@@ -456,9 +456,9 @@ static bool apply_callrate_filter(
 	const int min_called = (int)std::ceil(min_callrate * (double)nrows);
 
 	std::vector<int> keep_idx;
-	keep_idx.reserve((size_t)nblocks);
+	keep_idx.reserve((size_t)nmarkers);
 
-	for (int w = 0; w < nblocks; ++w) {
+	for (int w = 0; w < nmarkers; ++w) {
 		int called = 0;
 		for (int i = 0; i < nrows; ++i) {
 			float v = X(i, w);
@@ -475,7 +475,7 @@ static bool apply_callrate_filter(
 		return false;
 	}
 
-	if ((int)keep_idx.size() == nblocks) {
+	if ((int)keep_idx.size() == nmarkers) {
 		std::cout << "Call-rate filter: kept all markers (min_callrate=" << min_callrate << ")\n";
 		return true;
 	}
@@ -483,15 +483,15 @@ static bool apply_callrate_filter(
 	std::cout << "Call-rate filter (--min-callrate):\n";
 	std::cout << "  min_callrate = " << min_callrate << "\n";
 	std::cout << "  min_called   = " << min_called << " / " << nrows << "\n";
-	std::cout << "  before       = " << nblocks << "\n";
+	std::cout << "  before       = " << nmarkers << "\n";
 	std::cout << "  after        = " << (int)keep_idx.size() << "\n";
 
-	const int nblocks2 = (int)keep_idx.size();
-	Eigen::MatrixXf Xf(nrows, nblocks2);
-	std::vector<std::string> chroms_f((size_t)nblocks2);
-	std::vector<int> pos_f((size_t)nblocks2);
+	const int nmarkers2 = (int)keep_idx.size();
+	Eigen::MatrixXf Xf(nrows, nmarkers2);
+	std::vector<std::string> chroms_f((size_t)nmarkers2);
+	std::vector<int> pos_f((size_t)nmarkers2);
 
-	for (int j = 0; j < nblocks2; ++j) {
+	for (int j = 0; j < nmarkers2; ++j) {
 		int w = keep_idx[j];
 		Xf.col(j) = X.col(w);
 		chroms_f[j] = chroms[w];
@@ -503,8 +503,8 @@ static bool apply_callrate_filter(
 	pos.swap(pos_f);
 
 	if (!pos_start.empty()) {
-		std::vector<int> pos_start_f((size_t)nblocks2);
-		for (int j = 0; j < nblocks2; ++j)
+		std::vector<int> pos_start_f((size_t)nmarkers2);
+		for (int j = 0; j < nmarkers2; ++j)
 			pos_start_f[j] = pos_start[(size_t)keep_idx[j]];
 		pos_start.swap(pos_start_f);
 	}
@@ -512,11 +512,11 @@ static bool apply_callrate_filter(
 	return true;
 }
 
-static void mean_impute_missing_per_block(Eigen::MatrixXf& X) {
+static void mean_impute_missing_per_marker(Eigen::MatrixXf& X) {
 	const int nsamples = (int)X.rows();
-	const int nblocks = (int)X.cols();
+	const int nmarkers = (int)X.cols();
 
-	for (int w = 0; w < nblocks; ++w) {
+	for (int w = 0; w < nmarkers; ++w) {
 		double sum = 0.0;
 		int cnt = 0;
 
@@ -540,16 +540,16 @@ static void mean_impute_missing_per_block(Eigen::MatrixXf& X) {
 	}
 }
 
-static void build_blocks_by_chr_sorted(
+static void build_markers_by_chr_sorted(
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
-	std::unordered_map<std::string, std::vector<int>>& blocks_by_chr,
+	std::unordered_map<std::string, std::vector<int>>& markers_by_chr,
 	std::vector<std::string>& chr_order
 ) {
 	chr_order.clear();
-	blocks_by_chr = group_by_chr(chroms, chr_order);
+	markers_by_chr = group_by_chr(chroms, chr_order);
 
-	for (auto& kv : blocks_by_chr) {
+	for (auto& kv : markers_by_chr) {
 		auto& idx = kv.second;
 		std::sort(idx.begin(), idx.end(),
 			[&](int a, int b) { return pos[a] < pos[b]; }
@@ -681,7 +681,7 @@ static bool build_hi_components_if_needed(
 	return true;
 }
 
-static int resolve_target_block(
+static int resolve_target_marker(
 	const CliOptions& opt,
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos
@@ -697,14 +697,14 @@ static int resolve_target_block(
 	return -2;
 }
 
-static bool residualize_blocks(
+static bool residualize_markers(
 	Eigen::MatrixXf& Z,
 	const Eigen::MatrixXf& X,
 	const Eigen::MatrixXf& H,
-	int& n_valid_blocks
+	int& n_valid_markers
 ) {
 	try {
-		Z = residualize_and_zscore(X, H, n_valid_blocks);
+		Z = residualize_and_zscore(X, H, n_valid_markers);
 	} catch (const std::exception& e) {
 		std::cerr << "Error: " << e.what() << "\n";
 		return false;
@@ -714,15 +714,15 @@ static bool residualize_blocks(
 
 static void print_residualization_sanity(const Eigen::MatrixXf& Z) {
 	const int nrows = (int)Z.rows();
-	auto is_block_valid = [&](int w) -> bool {
+	auto is_marker_valid = [&](int w) -> bool {
 		for (int i = 0; i < nrows; ++i) {
 			if (std::isnan(Z(i, w))) return false;
 		}
 		return true;
 	};
 
-	const int nblocks = (int)Z.cols();
-	if (nblocks >= 2 && is_block_valid(0) && is_block_valid(1)) {
+	const int nmarkers = (int)Z.cols();
+	if (nmarkers >= 2 && is_marker_valid(0) && is_marker_valid(1)) {
 		double dot = 0.0;
 		for (int i = 0; i < nrows; ++i)
 			dot += (double)Z(i, 0) * (double)Z(i, 1);
@@ -912,7 +912,7 @@ int main(int argc, char** argv) {
 	std::vector<int> pos_start_full = pos_start;
 
 	// Stage 3a: Apply optional marker filters
-	if (!apply_block_filters(X, chroms, pos, pos_start, wm.sample_names, cli))
+	if (!apply_marker_filters(X, chroms, pos, pos_start, wm.sample_names, cli))
 		return 1;
 
 	// Stage 3b: Apply optional callrate filters
@@ -921,10 +921,10 @@ int main(int argc, char** argv) {
 
 	if (cli.min_callrate < 1.0) {
 		std::cout << "Missing-data handling: mean-imputing per marker (enabled by --min-callrate < 1.0)\n";
-		mean_impute_missing_per_block(X);
+		mean_impute_missing_per_marker(X);
 	}
 
-	const int nblocks = (int)chroms.size();
+	const int nmarkers = (int)chroms.size();
 
 	std::cout << "admixld input OK\n";
 	if (!cli.vcf_path.empty())
@@ -934,13 +934,13 @@ int main(int argc, char** argv) {
 	std::cout << "  out        = " << cli.out << "\n";
 	std::cout << "  nsamples   = " << nsamples_diploid
 		<< (cli.phased ? " (phased: " + std::to_string(2 * nsamples_diploid) + " haplotype rows)" : "") << "\n";
-	std::cout << "  markers    = " << nblocks << "\n";
+	std::cout << "  markers    = " << nmarkers << "\n";
 
 	{
 		const long long rows = (long long)(cli.phased ? 2 * nsamples_diploid : nsamples_diploid);
-		const long long est_gb_peak = (rows * (long long)nblocks * 4 * 2 + 500000000LL) / 1000000000LL;
-		if (nblocks > 1000000) {
-			std::cerr << "Warning: " << nblocks << " markers x " << nsamples_diploid
+		const long long est_gb_peak = (rows * (long long)nmarkers * 4 * 2 + 500000000LL) / 1000000000LL;
+		if (nmarkers > 1000000) {
+			std::cerr << "Warning: " << nmarkers << " markers x " << nsamples_diploid
 				<< " samples — estimated peak RAM ~" << est_gb_peak << " GB. "
 				<< "Ensure sufficient memory before proceeding.\n";
 		}
@@ -954,9 +954,9 @@ int main(int argc, char** argv) {
 	std::cout << std::flush;
 
 	// Stage 4: Build chromosome index for markers
-	std::unordered_map<std::string, std::vector<int>> blocks_by_chr;
+	std::unordered_map<std::string, std::vector<int>> markers_by_chr;
 	std::vector<std::string> chr_order;
-	build_blocks_by_chr_sorted(chroms, pos, blocks_by_chr, chr_order);
+	build_markers_by_chr_sorted(chroms, pos, markers_by_chr, chr_order);
 	std::cout << "Chromosomes in loaded markers: " << chr_order.size() << "\n";
 
 	// Stage 5: Compute HI from markers or load covariate matrix from --cov
@@ -1004,7 +1004,7 @@ int main(int argc, char** argv) {
 	// Stage 7: Resolve target marker (after filtering)
 	int target_w = -1;
 	if (cli.has_target) {
-		int tw = resolve_target_block(cli, chroms, pos);
+		int tw = resolve_target_marker(cli, chroms, pos);
 		if (tw == -2) {
 			std::cerr << "Error: target marker not found after filtering: "
 				<< cli.target_chr << ":" << cli.target_pos << "\n";
@@ -1046,14 +1046,15 @@ int main(int argc, char** argv) {
 
 	// Stage 9: Residualize markers on HI and z-score => Z (nsamples × nmarkers)
 	Eigen::MatrixXf Z;
-	int n_valid_blocks = 0;
+	int n_valid_markers = 0;
 
-	if (!residualize_blocks(Z, X, H, n_valid_blocks))
+	if (!residualize_markers(Z, X, H, n_valid_markers))
 		return 1;
-	X.resize(0, 0);
+	if (!has_hc_full)
+		X.resize(0, 0);	// excl-focus mode needs X for per-pair re-residualization
 
 	std::cout << "Residualization complete:\n";
-	std::cout << "  valid_markers = " << n_valid_blocks << " / " << nblocks << "\n";
+	std::cout << "  valid_markers = " << n_valid_markers << " / " << nmarkers << "\n";
 	print_residualization_sanity(Z);
 	std::cout << std::flush;
 
@@ -1081,7 +1082,7 @@ int main(int argc, char** argv) {
 		if (cli.hi_mode == "global") {
 			if (!permute_sample_vector_summary(
 				Z, gZ,
-				blocks_by_chr, chr_order,
+				markers_by_chr, chr_order,
 				popt,
 				cli.seed, cli.n_perm, cli.perm_sample,
 				summ
@@ -1101,7 +1102,7 @@ int main(int argc, char** argv) {
 				g,
 				chroms,
 				pos,
-				blocks_by_chr,
+				markers_by_chr,
 				chr_order,
 				hc_full,
 				popt,
@@ -1135,9 +1136,9 @@ int main(int argc, char** argv) {
 		std::cout << std::flush;
 
 		if (cli.hi_mode == "global") {
-			if (!permute_interchrom_summary_chrblock(
+			if (!permute_interchrom_summary_chrmarker(
 				Z,
-				blocks_by_chr, chr_order,
+				markers_by_chr, chr_order,
 				popt,
 				cli.seed, cli.n_perm, cli.perm_sample,
 				summ
@@ -1148,11 +1149,11 @@ int main(int argc, char** argv) {
 				std::cerr << "Error: HI components missing for excl-focus mode\n";
 				return 1;
 			}
-			if (!permute_interchrom_summary_chrblock_excl_focus(
+			if (!permute_interchrom_summary_chrmarker_excl_focus(
 				X,
 				chroms,
 				pos,
-				blocks_by_chr,
+				markers_by_chr,
 				chr_order,
 				hc_full,
 				popt,
@@ -1206,7 +1207,7 @@ int main(int argc, char** argv) {
 			if (!scan_vector_vs_windows_write_hits(
 				Z, gZ,
 				chroms, pos,
-				blocks_by_chr, chr_order,
+				markers_by_chr, chr_order,
 				opt,
 				out_path,
 				tested,
@@ -1232,7 +1233,7 @@ int main(int argc, char** argv) {
 				g,
 				chroms,
 				pos,
-				blocks_by_chr,
+				markers_by_chr,
 				chr_order,
 				hc_full,
 				opt,
@@ -1271,14 +1272,14 @@ int main(int argc, char** argv) {
 	if (cli.hi_mode == "global") {
 		if (target_w >= 0) {
 			if (!scan_target_write_hits(
-				Z, chroms, pos, blocks_by_chr, chr_order,
+				Z, chroms, pos, markers_by_chr, chr_order,
 				opt, target_w, out_path, tested, kept,
 				distrib_path, cli.distrib_sample, cli.seed
 			))
 				return 1;
 		} else {
-			if (!scan_blocks_write_hits(
-				Z, chroms, pos, blocks_by_chr, chr_order,
+			if (!scan_markers_write_hits(
+				Z, chroms, pos, markers_by_chr, chr_order,
 				opt, out_path, tested, kept,
 				distrib_path, cli.distrib_sample, cli.seed
 			))
@@ -1290,7 +1291,7 @@ int main(int argc, char** argv) {
 				X,
 				chroms,
 				pos,
-				blocks_by_chr,
+				markers_by_chr,
 				chr_order,
 				hc_full,
 				opt,
@@ -1304,11 +1305,11 @@ int main(int argc, char** argv) {
 			))
 				return 1;
 		} else {
-			if (!scan_blocks_write_hits_excl_focus(
+			if (!scan_markers_write_hits_excl_focus(
 				X,
 				chroms,
 				pos,
-				blocks_by_chr,
+				markers_by_chr,
 				chr_order,
 				hc_full,
 				opt,

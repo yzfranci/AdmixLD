@@ -139,7 +139,7 @@ static void compute_mean_sd_from_sample(
 	}
 }
 
-bool scan_blocks_write_hits_excl_focus(
+bool scan_markers_write_hits_excl_focus(
 	const Eigen::MatrixXf& X_scan,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,
@@ -1095,7 +1095,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	return true;
 }
 
-bool permute_interchrom_summary_chrblock_excl_focus(
+bool permute_interchrom_summary_chrmarker_excl_focus(
 	const Eigen::MatrixXf& X_scan,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,
@@ -1418,7 +1418,7 @@ bool permute_sample_vector_summary_excl_focus(
 			if (!cc.ok || cc.m <= 0)
 				continue;
 
-			// Permute gZ rows; Zc blocks remain in natural order
+			// Permute gZ rows; Zc markers remain in natural order
 			Eigen::VectorXf gZ_perm(nsamples);
 			for (int i = 0; i < nsamples; ++i)
 				gZ_perm(i) = cc.gZ(perm[i]);

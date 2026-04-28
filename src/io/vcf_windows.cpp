@@ -35,8 +35,8 @@ WindowMatrix load_windows_from_vcf(
 
 	int ds_id = bcf_hdr_id2int(hdr, BCF_DT_ID, "DS");
 	int gt_id = bcf_hdr_id2int(hdr, BCF_DT_ID, "GT");
-	bool has_ds = (ds_id >= 0);
-	bool has_gt = (gt_id >= 0);
+	bool has_ds = (ds_id >= 0) && bcf_hdr_idinfo_exists(hdr, BCF_HL_FMT, ds_id);
+	bool has_gt = (gt_id >= 0) && bcf_hdr_idinfo_exists(hdr, BCF_HL_FMT, gt_id);
 
 	if (opt.phased) {
 		if (!has_gt) {
@@ -85,7 +85,7 @@ WindowMatrix load_windows_from_vcf(
 		if (opt.phased) {
 			int32_t* gt = nullptr;
 			int ngt = 0;
-			int ret = bcf_get_format_int32(hdr, rec, "GT", &gt, &ngt);
+			int ret = bcf_get_genotypes(hdr, rec, &gt, &ngt);
 			if (ret <= 0 || ngt < 2 * nsamples) {
 				out.X.col(nwin).setConstant(NA);
 			} else {
@@ -121,7 +121,7 @@ WindowMatrix load_windows_from_vcf(
 		} else {
 			int32_t* gt = nullptr;
 			int ngt = 0;
-			int ret = bcf_get_format_int32(hdr, rec, "GT", &gt, &ngt);
+			int ret = bcf_get_genotypes(hdr, rec, &gt, &ngt);
 			if (ret <= 0 || ngt < 2 * nsamples) {
 				out.X.col(nwin).setConstant(NA);
 			} else {
