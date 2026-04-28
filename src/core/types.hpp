@@ -6,8 +6,8 @@
 
 struct WindowMeta {
 	std::vector<std::string> chrom;
-	std::vector<int> pos;        // end position of block (or sole position for VCF)
-	std::vector<int> pos_start;  // start position of block (MSP input only; empty for VCF)
+	std::vector<int> pos;        // end position of tract (MSP) or marker position (VCF)
+	std::vector<int> pos_start;  // start position of tract (MSP input only; empty for VCF)
 };
 
 struct WindowMatrix {

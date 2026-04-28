@@ -28,17 +28,17 @@
 
 	Pipeline:
 	1) Parse/validate CLI
-	2) Load ancestry blocks from VCF
-	3) Apply optional block filters (--chr/--no-chr/--bed)
-	4) Build chromosome index (block indices by chromosome)
+	2) Load ancestry markers from VCF
+	3) Apply optional marker filters (--chr/--no-chr/--bed)
+	4) Build chromosome index (marker indices by chromosome)
 	5) Compute/load hybrid index (full-genome by default; filtered if --compute-hi)
 	6) Optional modes: HI-only, permutations, sample-geno scans
-	7) Residualize blocks on HI and scan for LD hits
+	7) Residualize markers on HI and scan for LD hits
 */
 
 static void usage() {
 	std::cerr
-		<< "admixld (load blocks into matrix)\n"
+		<< "admixld (load markers into matrix)\n"
 		<< "Usage:\n"
 		<< "  admixld --vcf input.vcf[.gz] --out output_prefix\n"
 		<< "  admixld --msp input.msp.tsv   --out output_prefix\n"
@@ -47,14 +47,14 @@ static void usage() {
 		<< "  --min-pos-r FLOAT      Keep pairs with r >= value (asymmetric)\n"
 		<< "  --intra                Scan intrachromosomal pairs (default: interchrom only)\n"
 		<< "  --phased               Use phased haplotypes (2n rows); requires --intra; MSP/VCF GT only\n"
-		<< "  --max-dist INT         Intra only: max end-distance (bp) between block pairs\n"
-		<< "  --max-windows N        Load at most N blocks from the VCF (used solely for test runs and debugging)\n"
-		<< "  --min-callrate FLOAT   Minimum block call rate; values <1.0 enable within-block mean imputation (beta; might introduce bias).\n"
+		<< "  --max-dist INT         Intra only: max end-distance (bp) between marker pairs\n"
+		<< "  --max-windows N        Load at most N markers from the VCF (used solely for test runs and debugging)\n"
+		<< "  --min-callrate FLOAT   Minimum marker call rate; values <1.0 enable per-marker mean imputation (beta; might introduce bias).\n"
 		<< "  --cov FILE             Covariate file (TSV: for HI: sample<TAB>hi; For more covariates (PCA etc...) sample<TAB>cov1 [cov2 ...]; header optional); overrides computed HI\n"
 		<< "  --hi-mode STR          HI correction: global (default) | excl-focus (LOCO/LOCO2; incompatible with --cov)\n"
-		<< "  --compute-hi           Compute HI using FILTERED blocks only, write out.hi.tsv, and exit (ignored with --cov)\n"
+		<< "  --compute-hi           Compute HI using FILTERED markers only, write out.hi.tsv, and exit (ignored with --cov)\n"
 		<< "  --unweighted-hi        Use unweighted HI (mean(dosage)/2; legacy behavior; ignored with --cov)\n"
-		<< "  --pos-is-start         For weighted HI: interpret VCF block pos as START (ignored with --cov)\n"
+		<< "  --pos-is-start         For weighted HI: interpret VCF marker pos as START (ignored with --cov)\n"
 		<< "  --tile-size INT		 tile size for processing (default: 1024)\n"
 		<< "  --threads INT          Number of OpenMP threads for scan steps (default: 1)\n"
 		<< "  --distrib              Write empirical scan distribution summary\n"
@@ -64,9 +64,9 @@ static void usage() {
 		<< "  --seed INT             RNG seed for permutations (default: 1)\n"
 		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
 		<< "  --no-chr STR           Exclude this chromosome (repeatable; opposite of --chr)\n"
-		<< "  --bed FILE             Keep blocks whose position is within BED intervals (chr start end; no header)\n"
-		<< "  --target-chr STR       Scan one target block/pos vs all others (target chromosome)\n"
-		<< "  --target-pos INT       Scan one target block/pos vs all others (target position; matches single position)\n"
+		<< "  --bed FILE             Keep markers whose position is within BED intervals (chr start end; no header)\n"
+		<< "  --target-chr STR       Scan one target marker/pos vs all others (target chromosome)\n"
+		<< "  --target-pos INT       Scan one target marker/pos vs all others (target position; matches single position)\n"
 		<< "  --sample-geno FILE     Per-sample numeric mito haplotype/genotype/trait TSV: sample<TAB>value\n"
 	<< "  --keep-indv FILE       Keep only samples listed in FILE (one ID per line)\n";
 }
@@ -355,7 +355,7 @@ static bool apply_block_filters(
 	const int nrows = (int)X.rows();	// may be 2*nsamples in phased mode
 	int nwin = (int)chroms.size();
 
-	// Filters are applied before residualization so downstream matrices match the scanned block set.
+	// Filters are applied before residualization so downstream matrices match the scanned marker set.
 	std::unordered_map<std::string, bool> chr_keep_map;
 	std::unordered_map<std::string, bool> chr_drop_map;
 	build_chr_maps(opt, chr_keep_map, chr_drop_map);
@@ -397,14 +397,14 @@ static bool apply_block_filters(
 	}
 
 	if (keep_idx.empty()) {
-		std::cerr << "Error: no blocks remain after filtering.\n";
+		std::cerr << "Error: no markers remain after filtering.\n";
 		return false;
 	}
 
 	if ((int)keep_idx.size() == nwin)
 		return true;
 
-	std::cout << "Filtering blocks:\n";
+	std::cout << "Filtering markerss:\n";
 	std::cout << "  before = " << nwin << "\n";
 	std::cout << "  after  = " << (int)keep_idx.size() << "\n";
 
@@ -449,7 +449,7 @@ static bool apply_callrate_filter(
 		return true;
 
 	// Default is 1.0, which matches current strict behavior.
-	// If set < 1.0, we keep blocks called in at least that fraction of rows.
+	// If set < 1.0, we keep markers called in at least that fraction of rows.
 	if (min_callrate >= 1.0)
 		return true;
 
@@ -471,12 +471,12 @@ static bool apply_callrate_filter(
 	}
 
 	if (keep_idx.empty()) {
-		std::cerr << "Error: no blocks remain after --min-callrate filtering.\n";
+		std::cerr << "Error: no markers remain after --min-callrate filtering.\n";
 		return false;
 	}
 
 	if ((int)keep_idx.size() == nblocks) {
-		std::cout << "Call-rate filter: kept all blocks (min_callrate=" << min_callrate << ")\n";
+		std::cout << "Call-rate filter: kept all markers (min_callrate=" << min_callrate << ")\n";
 		return true;
 	}
 
@@ -570,16 +570,16 @@ static bool compute_hi(
 	const CliOptions& opt
 ) {
 	// Default: compute HI on full (unfiltered) set for stable ancestry covariate.
-	// --compute-hi: compute HI on the filtered block set, then exit (utility mode).
+	// --compute-hi: compute HI on the filtered marker set, then exit (utility mode).
 	const Eigen::MatrixXf& X_hi = opt.compute_hi_only ? X : X_full;
 	const std::vector<std::string>& chroms_hi = opt.compute_hi_only ? chroms : chroms_full;
 	const std::vector<int>& pos_hi = opt.compute_hi_only ? pos : pos_full;
 	const std::vector<int>& pos_start_hi = opt.compute_hi_only ? pos_start : pos_start_full;
 
 	if (opt.compute_hi_only)
-		std::cout << "Computing HI from FILTERED blocks (--chr/--no-chr/--bed applied)\n";
+		std::cout << "Computing HI from FILTERED markers (--chr/--no-chr/--bed applied)\n";
 	else
-		std::cout << "Computing HI from full block set (independent of --chr/--no-chr/--bed)\n";
+		std::cout << "Computing HI from full marker set (independent of --chr/--no-chr/--bed)\n";
 
 	const int n_diploid = opt.phased ? (int)X_hi.rows() / 2 : (int)X_hi.rows();
 	if (opt.unweighted_hi) {
@@ -631,7 +631,7 @@ static bool write_hi_and_print_summary(
 		}
 	}
 
-	std::cout << "Hybrid index (from blocks):\n";
+	std::cout << "Hybrid index (from markers):\n";
 	if (hcount == 0) {
 		std::cout << "  (all missing)\n";
 	} else {
@@ -729,7 +729,7 @@ static void print_residualization_sanity(const Eigen::MatrixXf& Z) {
 		double r = dot / (nrows - 1);
 		std::cout << "  sanity r(Z_b0, Z_b1) = " << r << "\n";
 	} else {
-		std::cout << "  sanity r(Z_b0, Z_b1) skipped (invalid block or <2 blocks)\n";
+		std::cout << "  sanity r(Z_b0, Z_b1) skipped (invalid marker or <2 markers)\n";
 	}
 }
 
@@ -871,7 +871,7 @@ int main(int argc, char** argv) {
 	if (sample_geno_mode && cli.has_target)
 		std::cout << "Note: --target-* ignored in --sample-geno mode\n";
 
-	// Stage 2: Load blocks from VCF or MSP
+	// Stage 2: Load markers from VCF or MSP
 	WindowMatrix wm;
 	{
 		const int max_win = cli.max_windows;
@@ -882,7 +882,7 @@ int main(int argc, char** argv) {
 			wm = load_windows_from_vcf(cli.vcf_path, vopt);
 		} else {
 			if (cli.pos_is_start)
-				std::cerr << "Warning: --pos-is-start has no effect with --msp (exact block lengths are used).\n";
+				std::cerr << "Warning: --pos-is-start has no effect with --msp (exact tract lengths are used).\n";
 			MspLoadOptions mopt;
 			mopt.max_windows = max_win;
 			mopt.phased = cli.phased;
@@ -911,7 +911,7 @@ int main(int argc, char** argv) {
 	std::vector<int> pos_full = pos;
 	std::vector<int> pos_start_full = pos_start;
 
-	// Stage 3a: Apply optional block filters
+	// Stage 3a: Apply optional marker filters
 	if (!apply_block_filters(X, chroms, pos, pos_start, wm.sample_names, cli))
 		return 1;
 
@@ -920,7 +920,7 @@ int main(int argc, char** argv) {
 		return 1;
 
 	if (cli.min_callrate < 1.0) {
-		std::cout << "Missing-data handling: mean-imputing within blocks (enabled by --min-callrate < 1.0)\n";
+		std::cout << "Missing-data handling: mean-imputing per marker (enabled by --min-callrate < 1.0)\n";
 		mean_impute_missing_per_block(X);
 	}
 
@@ -934,13 +934,13 @@ int main(int argc, char** argv) {
 	std::cout << "  out        = " << cli.out << "\n";
 	std::cout << "  nsamples   = " << nsamples_diploid
 		<< (cli.phased ? " (phased: " + std::to_string(2 * nsamples_diploid) + " haplotype rows)" : "") << "\n";
-	std::cout << "  blocks     = " << nblocks << "\n";
+	std::cout << "  markers    = " << nblocks << "\n";
 
 	{
 		const long long rows = (long long)(cli.phased ? 2 * nsamples_diploid : nsamples_diploid);
 		const long long est_gb_peak = (rows * (long long)nblocks * 4 * 2 + 500000000LL) / 1000000000LL;
 		if (nblocks > 1000000) {
-			std::cerr << "Warning: " << nblocks << " blocks x " << nsamples_diploid
+			std::cerr << "Warning: " << nblocks << " markers x " << nsamples_diploid
 				<< " samples — estimated peak RAM ~" << est_gb_peak << " GB. "
 				<< "Ensure sufficient memory before proceeding.\n";
 		}
@@ -953,13 +953,13 @@ int main(int argc, char** argv) {
 		std::cout << "  sample[" << i << "] = " << wm.sample_names[i] << "\n";
 	std::cout << std::flush;
 
-	// Stage 4: Build chromosome index for blocks
+	// Stage 4: Build chromosome index for markers
 	std::unordered_map<std::string, std::vector<int>> blocks_by_chr;
 	std::vector<std::string> chr_order;
 	build_blocks_by_chr_sorted(chroms, pos, blocks_by_chr, chr_order);
-	std::cout << "Chromosomes in loaded blocks: " << chr_order.size() << "\n";
+	std::cout << "Chromosomes in loaded markers: " << chr_order.size() << "\n";
 
-	// Stage 5: Compute HI from blocks or load covariate matrix from --cov
+	// Stage 5: Compute HI from markers or load covariate matrix from --cov
 	Eigen::MatrixXf H;
 
 	if (!cli.cov_path.empty()) {
@@ -1001,22 +1001,22 @@ int main(int argc, char** argv) {
 		return 2;
 	X_full.resize(0, 0);
 
-	// Stage 7: Resolve target block (after filtering)
+	// Stage 7: Resolve target marker (after filtering)
 	int target_w = -1;
 	if (cli.has_target) {
 		int tw = resolve_target_block(cli, chroms, pos);
 		if (tw == -2) {
-			std::cerr << "Error: target block not found after filtering: "
+			std::cerr << "Error: target marker not found after filtering: "
 				<< cli.target_chr << ":" << cli.target_pos << "\n";
 			return 1;
 		}
 		target_w = tw;
-		std::cout << "Target block: w=" << target_w
+		std::cout << "Target marker: w=" << target_w
 			<< " chr=" << cli.target_chr
 			<< " pos=" << cli.target_pos << "\n";
 	}
 
-	// Stage 8: Sample-geno mode (trait/mito vs all blocks)
+	// Stage 8: Sample-geno mode (trait/mito vs all markers)
 	Eigen::VectorXf gZ;
 	int g_valid = 0;
 
@@ -1044,7 +1044,7 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	// Stage 9: Residualize blocks on HI and z-score => Z (nsamples × nblocks)
+	// Stage 9: Residualize markers on HI and z-score => Z (nsamples × nmarkers)
 	Eigen::MatrixXf Z;
 	int n_valid_blocks = 0;
 
@@ -1053,7 +1053,7 @@ int main(int argc, char** argv) {
 	X.resize(0, 0);
 
 	std::cout << "Residualization complete:\n";
-	std::cout << "  valid_blocks = " << n_valid_blocks << " / " << nblocks << "\n";
+	std::cout << "  valid_markers = " << n_valid_blocks << " / " << nblocks << "\n";
 	print_residualization_sanity(Z);
 	std::cout << std::flush;
 
@@ -1073,7 +1073,7 @@ int main(int argc, char** argv) {
 	if (sample_geno_mode && cli.n_perm > 0) {
 		std::vector<PermSummary> summ;
 
-		std::cout << "Permutation test (sample-geno vs blocks):\n";
+		std::cout << "Permutation test (sample-geno vs markers):\n";
 		std::cout << "  n_perm      = " << cli.n_perm << "\n";
 		std::cout << "  seed        = " << cli.seed << "\n";
 		std::cout << "  sample_size = " << cli.perm_sample << "\n";
@@ -1119,7 +1119,7 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 
-	// Stage 10b: Block/block permutation test (interchrom chr-block)
+	// Stage 10b: Marker/marker permutation test (interchrom chr-marker)
 	if (cli.n_perm > 0) {
 		if (cli.intra) {
 			std::cerr << "Error: --permute is currently implemented for interchrom scans only (omit --intra).\n";
@@ -1128,7 +1128,7 @@ int main(int argc, char** argv) {
 
 		std::vector<PermSummary> summ;
 
-		std::cout << "Permutation test (interchrom, chr-block):\n";
+		std::cout << "Permutation test (interchrom, chr-marker):\n";
 		std::cout << "  n_perm      = " << cli.n_perm << "\n";
 		std::cout << "  seed        = " << cli.seed << "\n";
 		std::cout << "  perm_sample = " << cli.perm_sample << "\n";
@@ -1190,7 +1190,7 @@ int main(int argc, char** argv) {
 	opt.min_neg_r = min_neg_r;
 	opt.min_pos_r = min_pos_r;
 
-	// Stage 11a: Sample-geno scan overrides block/block scan
+	// Stage 11a: Sample-geno scan overrides marker/marker scan
 	if (sample_geno_mode) {
 		std::string out_path = cli.out + ".samplegeno.hits.tsv";
 		std::string distrib_path;
@@ -1200,7 +1200,7 @@ int main(int argc, char** argv) {
 		long long tested = 0;
 		long long kept = 0;
 
-		std::cout << "Scan mode: sample-geno vs all blocks\n";
+		std::cout << "Scan mode: sample-geno vs all markers\n";
 
 		if (cli.hi_mode == "global") {
 			if (!scan_vector_vs_windows_write_hits(
@@ -1256,7 +1256,7 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 
-	// Stage 11b: Block/block scan
+	// Stage 11b: Marker/marker scan
 	std::string out_path = cli.out + ".hits.tsv";
 	std::string distrib_path;
 	if (cli.distrib)
@@ -1266,7 +1266,7 @@ int main(int argc, char** argv) {
 	long long kept = 0;
 
 	std::cout << "Scan mode: " << (cli.intra ? "intrachromosomal" : "interchromosomal") << "\n";
-	std::cout << "Block size: " << cli.tile_size << "\n";
+	std::cout << "Tile size: " << cli.tile_size << "\n";
 
 	if (cli.hi_mode == "global") {
 		if (target_w >= 0) {

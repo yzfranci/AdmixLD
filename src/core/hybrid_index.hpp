@@ -15,7 +15,7 @@ Eigen::VectorXf compute_hi_from_X(
 	int nsamples_diploid = 0
 );
 
-// Weighted HI using block lengths per chromosome.
+// Weighted HI using tract lengths per chromosome.
 // If pos_start is non-empty (MSP input): exact lengths computed as pos[w] - pos_start[w].
 // Otherwise (VCF input): lengths inferred from pos alone:
 //   pos_is_start=false (default): pos is END, len[k] = pos[k] - pos[k-1]
@@ -42,7 +42,7 @@ struct HiComponentsWeighted {
 };
 
 // Build per-chromosome weighted components (for LOCO/LOCO2).
-// Uses the same block-length logic as compute_hi_from_X_weighted.
+// Uses the same tract-length logic as compute_hi_from_X_weighted.
 HiComponentsWeighted build_hi_components_weighted(
 	const Eigen::MatrixXf& X,
 	const std::vector<std::string>& chroms,

@@ -2,9 +2,9 @@
 
 ## Overview
 
-AdmixLD is a command-line tool for detecting **ancestry disequilibrium (AD)** in hybrid zones and admixed populations. It scans for statistically significant pairwise correlations between residualized ancestry blocks — correlations that remain after conditioning on global hybrid index (ancestry proportion). Such signals can indicate adaptive introgression, selection, or anomalous population structure at specific genomic loci.
+AdmixLD is a command-line tool for detecting **ancestry disequilibrium (AD)** in hybrid zones and admixed populations. It scans for statistically significant pairwise correlations between residualized ancestry markers — correlations that remain after conditioning on global hybrid index (ancestry proportion). Such signals can indicate adaptive introgression, selection, or anomalous population structure at specific genomic loci.
 
-**Core idea**: Each ancestry block's dosage is residualized on the genome-wide hybrid index (HI), removing background ancestry-linkage disequilibrium. Pearson correlations between residualized blocks across the genome then reveal statistically significant deviations.
+**Core idea**: Each ancestry marker's dosage is residualized on the genome-wide hybrid index (HI), removing background ancestry-linkage disequilibrium. Pearson correlations between residualized markers across the genome then reveal statistically significant deviations.
 
 ---
 
@@ -30,27 +30,13 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-The binary is placed at `build/adfinder`.
-
----
-
-## Quick Start
-
-```bash
-# Basic interchromosomal scan
-./build/admixld --vcf data.vcf --out results --min-abs-r 0.5
-
-# Run smoke tests
-tests/test_smoke.sh
-```
-
 ---
 
 ## Input File Formats
 
-### VCF/BCF — Ancestry Blocks (`--vcf`)
+### VCF/BCF — Ancestry Markers (`--vcf`)
 
-The primary input is a VCF or BCF file where each record represents an **ancestry block** (e.g., from a local ancestry inference tool). Each sample must have either:
+The primary input is a VCF or BCF file where each record represents an **ancestry tract** (e.g., from a local ancestry inference tool). Each sample must have either:
 
 - `DS` (dosage): a continuous value in [0, 2] representing ancestry dosage
 - `GT` (genotype): a standard diploid genotype (e.g., `0|1`, `1/1`)
@@ -107,7 +93,7 @@ A single-column file is equivalent to the former `--hi` flag and produces identi
 
 ### Sample Trait TSV (`--sample-geno`)
 
-Per-sample numeric trait for correlating against all ancestry blocks. Tab-separated. Missing values can be encoded as `.`, `NA`, `NaN`, `nan`, or `NAN`. Requires at least 3 non-missing samples.
+Per-sample numeric trait for correlating against all ancestry markers. Tab-separated. Missing values can be encoded as `.`, `NA`, `NaN`, `nan`, or `NAN`. Requires at least 3 non-missing samples.
 
 ```
 sample    trait
@@ -331,7 +317,7 @@ In leave-one-chromosome-out (LOCO) mode, the HI used to residualize blocks on ch
 
 $$\text{HI}^{-c}_i = \frac{\sum_{j \notin c} d_{ij} L_j}{2 \sum_{j \notin c} L_j}$$
 
-This prevents the focal chromosome's own ancestry signal from inflating its residuals, which would suppress true signals on that chromosome while producing artifactual correlations between it and others. LOCO mode is recommended when the data contain strong chromosomal-scale ancestry blocks.
+This prevents the focal chromosome's own ancestry signal from inflating its residuals, which would suppress true signals on that chromosome while producing artifactual correlations between it and others. LOCO mode is recommended when the data contain strong chromosomal-scale ancestry tracts.
 
 ---
 

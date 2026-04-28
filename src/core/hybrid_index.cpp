@@ -60,7 +60,7 @@ Eigen::VectorXf compute_hi_from_X(
 	return h;
 }
 
-// Compute exact block lengths from MSP spos/epos columns.
+// Compute exact tract lengths from MSP spos/epos columns.
 static std::vector<float> compute_block_lengths_from_range_msp(
 	const std::vector<int>& pos_start,
 	const std::vector<int>& pos_end
@@ -254,7 +254,7 @@ HiComponentsWeighted build_hi_components_weighted(
 		hc.wtot_chr[(size_t)c] = Eigen::VectorXf::Zero(nsamples);
 	}
 
-	// Weights per window (block lengths)
+	// Weights per window (tract lengths)
 	std::vector<float> wlen((size_t)nwin, 1.0f);
 	if ((int)chroms.size() == nwin && (int)pos.size() == nwin) {
 		wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
