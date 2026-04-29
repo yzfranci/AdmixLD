@@ -2,6 +2,7 @@ build/
 _build/
 dist/
 tests/
+.claude/
 *.o
 *.a
 *.so
@@ -11,6 +12,8 @@ tests/
 *.log
 *.tsv
 *.tsv.gz
+!example_data_files/*.tsv
+!example_data_files/*.tsv.gz
 *.bin
 *.npy
 *.vcf
