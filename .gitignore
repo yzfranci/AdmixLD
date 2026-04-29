@@ -1,6 +1,7 @@
 build/
 _build/
 dist/
+tests/
 *.o
 *.a
 *.so
@@ -13,7 +14,6 @@ dist/
 *.bin
 *.npy
 *.vcf
-*.vcf.gz
 *.bcf
 *.csi
 *.tbi

@@ -8,6 +8,7 @@
 	--chr scaffold-mi8 \
 	--chr scaffold-mi9 \
 	--chr scaffold-mi10 \
+	--distrib \
 	--hi-mode excl-focus
 
 ./build/admixld \

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BIN=./build/admixld
-VCF=tests/data/ancestry_blocks.vcf
+VCF=../example_data_files/data.vcf.gz
 
 OUT=$(mktemp -d)
 
