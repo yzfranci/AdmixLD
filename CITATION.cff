@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use AdmixLD, please cite the following paper."
+type: software
+title: AdmixLD
+version: 1.0.0
+license: MIT
+repository-code: https://github.com/yzfranci/AdmixLD
+authors:
+  - family-names: TODO
+    given-names: TODO
+    orcid: https://orcid.org/TODO
+preferred-citation:
+  type: article
+  title: "TODO: paper title"
+  authors:
+    - family-names: TODO
+      given-names: TODO
+  journal: "TODO"
+  year: TODO
+  doi: "TODO"
