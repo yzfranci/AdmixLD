@@ -142,3 +142,6 @@ Optional inputs:
 The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n`.
 
 See [documentation.md](documentation.md) for the full flag reference, file format specifications, and method details.
+
+## Citation
+TO BE COMPLETED
