@@ -145,9 +145,26 @@ scaffold-mi7    100000    200000
 scaffold-mi8    50000     150000
 ```
 
+### Parental Allele Frequency File (`--ref-freq`)
+
+A tab-separated file providing the allele frequency of the ancestry-1 allele (`p1`) and the ancestry-2 allele (`p2`) in the two parental populations, one row per marker. A header row is auto-detected.
+
+```
+chrom           pos       p1      p2
+scaffold-ma1    10000     0.95    0.02
+scaffold-ma1    25000     0.88    0.11
+```
+
+- `chrom` and `pos` must match a record in the VCF exactly (chromosome name and integer position).
+- `p1` and `p2` are allele frequencies in [0, 1].
+- Markers present in the VCF but absent from this file are dropped from the analysis (a count is reported).
+- Only used with `--vcf`; ignored (with a warning) when `--msp` is provided.
+
+See [Frequency-Based HI Computation](#frequency-based-hi-computation---ref-freq) for details on how these frequencies are used.
+
 ### Sample Keep List (`--keep-indv`)
 
-A plain-text file listing one sample ID per line. Only these samples are retained after loading. All other samples are dropped before any filtering or computation.
+A plain-text file listing one sample ID per line. Only these samples are included in the **correlation scan**. HI estimation, LOCO component building, and marker residualization are performed on the full sample set; the filter is applied afterwards so that it does not bias covariate estimation.
 
 ---
 
@@ -241,9 +258,11 @@ When either asymmetric filter (`--min-neg-r` or `--min-pos-r`) is set, `--min-ab
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--cov FILE` | computed | Load covariate matrix from TSV (one or more columns); replaces computed HI |
+| `--ref-freq FILE` | none | Parental allele frequency TSV (`chrom`, `pos`, `p1`, `p2`); enables frequency-based HI and allele polarization (VCF only) |
+| `--min-delta-afd FLOAT` | 0.0 | Minimum allele frequency difference \|p1 − p2\| to retain a marker when `--ref-freq` is used |
 | `--hi-mode STR` | `global` | HI correction mode: `global` or `excl-focus` (LOCO; incompatible with `--cov`) |
 | `--compute-hi` | off | Compute and save HI, then exit without scanning (ignored with `--cov`) |
-| `--unweighted-hi` | off | Use unweighted (simple mean) HI instead of length-weighted (ignored with `--cov`) |
+| `--unweighted-hi` | off | Use unweighted (simple mean) HI instead of length-weighted (ignored with `--cov` and `--ref-freq`) |
 | `--pos-is-start` | off | Treat VCF POS as marker start rather than marker end; no effect for `--msp` input |
 
 LOCO (leave-one-chromosome-out) can be used to compute HI without the focus chromosome(s), to avoid confounding the focal chromosome's signal with its own contribution to the global HI estimate (Schumer and Brandvain, 2016).
@@ -256,7 +275,7 @@ LOCO (leave-one-chromosome-out) can be used to compute HI without the focus chro
 | `--no-chr STR` | none | Exclude this chromosome (repeatable) |
 | `--bed FILE` | none | Keep only markers within BED intervals |
 | `--min-callrate FLOAT` | 1.0 | Minimum call-rate to retain a marker; enables mean imputation if < 1.0 |
-| `--keep-indv FILE` | all | Keep only samples listed in FILE (one ID per line) |
+| `--keep-indv FILE` | all | Keep only samples listed in FILE (one ID per line) for the correlation scan; residualization uses the full set |
 
 Be sure to use --min-callrate for loci that still have a decent amount of data (<10% missing), as it can introduce bias due to mean imputation.
 
@@ -321,6 +340,32 @@ $$\text{HI}_i = \frac{1}{2n} \sum_j d_{ij}$$
 
 where $n$ is the number of markers. Equivalent to treating all markers equally regardless of physical length.
 
+### Frequency-Based HI Computation (`--ref-freq`)
+
+When `--ref-freq` is supplied together with `--vcf`, AdmixLD uses parental allele frequencies to estimate HI via a δ²-weighted estimator instead of the default dosage-average approach.
+
+**Allele polarization**
+
+Before computing HI, each marker is polarized so that p1 ≥ p2 (i.e., so that the ancestry-1 allele is always the higher-frequency allele in parental population 1). For any marker where p2 > p1 in the input file, the dosage column is flipped:
+
+$$d'_{ij} = d_{\max} - d_{ij}$$
+
+and p1 and p2 are swapped, where $d_{\max}$ is 2 for diploid and 1 for phased haplotype data. This step ensures that δ = p1 − p2 > 0 for every retained marker.
+
+Markers absent from the `--ref-freq` file or with |δ| < `--min-delta-afd` are dropped before HI estimation (a count is printed to stdout).
+
+**Formula**
+
+$$\text{HI}_i = \frac{\displaystyle\sum_j \left(\frac{d_{ij}}{2} - p_{2j}\right) \delta_j \, L_j}{\displaystyle\sum_j \delta_j^2 \, L_j}$$
+
+where $\delta_j = p_{1j} - p_{2j}$ is the allele frequency difference and $L_j$ is the inferred segment length (same length inference as weighted HI). The estimator is equivalent to projecting the mean-centred dosage onto the δ axis and weighting by the informativeness (δ²) of each marker, yielding a value in [0, 1] for pure-ancestry individuals.
+
+**LOCO with `--ref-freq`**
+
+When `--hi-mode excl-focus` is used together with `--ref-freq`, per-chromosome numerator and denominator components are accumulated separately, so the LOCO HI for chromosome $c$ can be computed without re-scanning all markers:
+
+$$\text{HI}^{-c}_i = \frac{\text{num\_total}_i - \text{num}_{c,i}}{\text{den\_total}_i - \text{den}_{c,i}}$$
+
 ### Residualization
 
 Each marker's dosage vector is residualized on the covariate matrix $\mathbf{H}$ (samples × $k$) via ordinary least squares. By default $\mathbf{H}$ is the single-column genome-wide hybrid index; with `--cov` it can be any number of columns (e.g., PC1–PC3 from a PCA).
@@ -364,6 +409,8 @@ $$\text{HI}^{-c}_i = \frac{\sum_{j \notin c} d_{ij} L_j}{2 \sum_{j \notin c} L_j
 
 This prevents the focal chromosome's own ancestry signal from inflating its residuals, which would suppress true signals on that chromosome while producing artifactual correlations between it and others. LOCO mode is recommended when the data contain strong chromosomal-scale ancestry tracts.
 
+When used with `--ref-freq`, the same exclusion principle applies using the frequency-based components; see [Frequency-Based HI Computation](#frequency-based-hi-computation---ref-freq).
+
 ---
 
 ## Missing Data
@@ -384,7 +431,11 @@ Mean imputation is applied only when explicitly requested. This option is intend
 
 - **Multithreading**: Parallel scanning writes per-thread temporary files that are merged after the scan. Thread count has no effect on results, only runtime.
 - **Weighted vs unweighted HI**: Weighted HI is preferred when markers vary substantially in inferred segment length (typical for local ancestry tract data obtained via Loter, RFMIX etc...). Unweighted HI may be appropriate for SNP arrays.
+- **Frequency-based HI (`--ref-freq`)**: This mode is recommended when markers are individual SNPs rather than ancestry tracts, since the δ²-weighting emphasises informative diagnostic markers. It requires a parental allele frequency file and is only compatible with `--vcf`.
+- **Allele polarization**: Polarization is applied internally before HI computation and residualization. The dosage values stored in memory and used throughout the analysis reflect the polarized allele. The input VCF is not modified.
+- **`--ref-freq` and `--msp`**: `--ref-freq` is silently ignored when `--msp` is provided. MSP dosages are already coded as ancestry counts and do not require frequency-based polarization.
 - **LOCO and permutations**: When using `--hi-mode excl-focus` with `--permute`, HI components are re-used across permutations for efficiency; only the mapping of HI to shuffled samples changes.
 - **`--msp` vs `--vcf`**: MSP input provides explicit tract start/end positions, so segment lengths for weighted HI are exact. VCF input infers lengths from consecutive marker positions (affected by `--pos-is-start`).
 - **`--cov` and LOCO**: `--cov` is incompatible with `--hi-mode excl-focus`. LOCO requires per-chromosome HI components derived from the marker data itself and cannot be computed for externally supplied covariates.
 - **`--cov` missing data**: No missing values are permitted in the covariate file. All samples in the input must be present.
+- **`--keep-indv` and residualization**: The sample filter is applied **after** residualization. HI estimation, LOCO component building, and OLS residualization all use the full sample set to avoid biasing covariate estimation with a non-representative subset. Only the correlation scan (and permutations) use the filtered subset.

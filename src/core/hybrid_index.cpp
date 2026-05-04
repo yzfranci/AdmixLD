@@ -7,6 +7,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <algorithm>
+#include <numeric>
 
 Eigen::VectorXf compute_hi_from_X(
 	const Eigen::MatrixXf& X,
@@ -326,6 +327,186 @@ Eigen::VectorXf hi_from_components_weighted_excluding(
 			h(i) = std::numeric_limits<float>::quiet_NaN();
 		} else {
 			h(i) = (wsum(i) / d) / 2.0f;
+		}
+	}
+
+	return h;
+}
+
+Eigen::VectorXf compute_hi_freq(
+	const Eigen::MatrixXf& X,
+	const std::vector<MarkerFreq>& freqs,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	bool pos_is_start,
+	const std::vector<int>& pos_start,
+	bool phased,
+	int nsamples_diploid
+) {
+	const int nwin = (int)X.cols();
+
+	std::vector<float> wlen;
+	if ((int)chroms.size() == nwin && (int)pos.size() == nwin) {
+		wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
+			? compute_tract_lengths_from_range_msp(pos_start, pos)
+			: infer_tract_lengths(chroms, pos, pos_is_start);
+	} else {
+		wlen.assign((size_t)nwin, 1.0f);
+	}
+
+	if (phased) {
+		Eigen::VectorXf h(nsamples_diploid);
+		for (int i = 0; i < nsamples_diploid; ++i) {
+			double num = 0.0, den = 0.0;
+			for (int w = 0; w < nwin; ++w) {
+				const MarkerFreq& mf = freqs[(size_t)w];
+				if (std::isnan(mf.p1) || std::isnan(mf.p2)) continue;
+				float v0 = X(2 * i,     w);
+				float v1 = X(2 * i + 1, w);
+				if (std::isnan(v0) || std::isnan(v1)) continue;
+				double delta = (double)mf.p1 - (double)mf.p2;
+				double L = (double)wlen[(size_t)w];
+				double d_half = ((double)v0 + (double)v1) / 2.0;
+				num += (d_half - (double)mf.p2) * delta * L;
+				den += delta * delta * L;
+			}
+			h(i) = (den > 0.0) ? (float)(num / den)
+				: std::numeric_limits<float>::quiet_NaN();
+		}
+		return h;
+	}
+
+	const int nsamples = (int)X.rows();
+	Eigen::VectorXf h(nsamples);
+
+	for (int i = 0; i < nsamples; ++i) {
+		double num = 0.0, den = 0.0;
+		for (int w = 0; w < nwin; ++w) {
+			const MarkerFreq& mf = freqs[(size_t)w];
+			if (std::isnan(mf.p1) || std::isnan(mf.p2)) continue;
+			float v = X(i, w);
+			if (std::isnan(v)) continue;
+			double delta = (double)mf.p1 - (double)mf.p2;
+			double L = (double)wlen[(size_t)w];
+			num += ((double)v / 2.0 - (double)mf.p2) * delta * L;
+			den += delta * delta * L;
+		}
+		h(i) = (den > 0.0) ? (float)(num / den)
+			: std::numeric_limits<float>::quiet_NaN();
+	}
+
+	return h;
+}
+
+HiComponentsFreq build_hi_components_freq(
+	const Eigen::MatrixXf& X,
+	const std::vector<MarkerFreq>& freqs,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	bool pos_is_start,
+	const std::vector<int>& pos_start
+) {
+	const int nsamples = (int)X.rows();
+	const int nwin = (int)X.cols();
+
+	HiComponentsFreq hc;
+	hc.num_total = Eigen::VectorXf::Zero(nsamples);
+	hc.den_total = Eigen::VectorXf::Zero(nsamples);
+
+	// Stable chromosome order: first occurrence
+	std::unordered_map<std::string, int> chr_to_idx;
+	chr_to_idx.reserve(64);
+
+	for (int w = 0; w < nwin; ++w) {
+		const std::string& c = (w < (int)chroms.size()) ? chroms[w] : std::string("");
+		if (c.empty()) continue;
+		if (chr_to_idx.find(c) == chr_to_idx.end()) {
+			int id = (int)hc.chr_order.size();
+			chr_to_idx[c] = id;
+			hc.chr_order.push_back(c);
+		}
+	}
+
+	const int C = (int)hc.chr_order.size();
+	hc.num_chr.resize((size_t)C);
+	hc.den_chr.resize((size_t)C);
+	for (int c = 0; c < C; ++c) {
+		hc.num_chr[(size_t)c] = Eigen::VectorXf::Zero(nsamples);
+		hc.den_chr[(size_t)c] = Eigen::VectorXf::Zero(nsamples);
+	}
+
+	// Tract lengths
+	std::vector<float> wlen((size_t)nwin, 1.0f);
+	if ((int)chroms.size() == nwin && (int)pos.size() == nwin) {
+		wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
+			? compute_tract_lengths_from_range_msp(pos_start, pos)
+			: infer_tract_lengths(chroms, pos, pos_is_start);
+	}
+
+	for (int w = 0; w < nwin; ++w) {
+		if (w >= (int)chroms.size()) continue;
+		if (w >= (int)freqs.size()) continue;
+
+		const MarkerFreq& mf = freqs[(size_t)w];
+		if (std::isnan(mf.p1) || std::isnan(mf.p2)) continue;
+
+		const std::string& chr = chroms[(size_t)w];
+		auto it = chr_to_idx.find(chr);
+		if (it == chr_to_idx.end()) continue;
+
+		const int cidx = it->second;
+		const float Lf = (w < (int)wlen.size()) ? wlen[(size_t)w] : 1.0f;
+		const float L = (Lf >= 1.0f) ? Lf : 1.0f;
+		const double delta = (double)mf.p1 - (double)mf.p2;
+		const double delta2_L = delta * delta * (double)L;
+
+		for (int i = 0; i < nsamples; ++i) {
+			const float v = X(i, w);
+			if (std::isnan(v)) continue;
+
+			const double contrib_num = ((double)v / 2.0 - (double)mf.p2) * delta * (double)L;
+			hc.num_total(i) += (float)contrib_num;
+			hc.den_total(i) += (float)delta2_L;
+			hc.num_chr[(size_t)cidx](i) += (float)contrib_num;
+			hc.den_chr[(size_t)cidx](i) += (float)delta2_L;
+		}
+	}
+
+	return hc;
+}
+
+Eigen::VectorXf hi_from_components_freq_excluding(
+	const HiComponentsFreq& hc,
+	const std::string& exclude_chrA,
+	const std::string& exclude_chrB
+) {
+	const int nsamples = (int)hc.num_total.size();
+
+	Eigen::VectorXf num = hc.num_total;
+	Eigen::VectorXf den = hc.den_total;
+
+	auto subtract_chr = [&](const std::string& chr) {
+		if (chr.empty()) return;
+		for (int c = 0; c < (int)hc.chr_order.size(); ++c) {
+			if (hc.chr_order[(size_t)c] == chr) {
+				num -= hc.num_chr[(size_t)c];
+				den -= hc.den_chr[(size_t)c];
+				return;
+			}
+		}
+	};
+
+	subtract_chr(exclude_chrA);
+	if (!exclude_chrB.empty() && exclude_chrB != exclude_chrA)
+		subtract_chr(exclude_chrB);
+
+	Eigen::VectorXf h(nsamples);
+	for (int i = 0; i < nsamples; ++i) {
+		const float d = den(i);
+		if (!(d > 0.0f) || !std::isfinite(d)) {
+			h(i) = std::numeric_limits<float>::quiet_NaN();
+		} else {
+			h(i) = num(i) / d;
 		}
 	}
 
