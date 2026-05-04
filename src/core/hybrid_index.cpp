@@ -516,18 +516,16 @@ Eigen::VectorXf hi_from_components_freq_excluding(
 bool load_cov_tsv(
 	const std::string& path,
 	const std::vector<std::string>& sample_names,
-	Eigen::MatrixXf& H_out
+	Eigen::VectorXf& h_out
 ) {
 	std::ifstream in(path);
 	if (!in) {
-		std::cerr << "Error: cannot open covariate file: " << path << "\n";
+		std::cerr << "Error: cannot open --cov file: " << path << "\n";
 		return false;
 	}
 
-	int nsamples = (int)sample_names.size();
-	int ncols = -1;
-
-	std::unordered_map<std::string, std::vector<float>> m;
+	const int nsamples = (int)sample_names.size();
+	std::unordered_map<std::string, float> m;
 	m.reserve((size_t)nsamples * 2);
 
 	std::string line;
@@ -550,43 +548,38 @@ bool load_cov_tsv(
 		}
 		if (vals.empty()) continue;
 
-		if (ncols == -1) {
-			ncols = (int)vals.size();
-		} else if ((int)vals.size() != ncols) {
-			std::cerr << "Error: covariate file has inconsistent column count at sample: "
-			          << sample << " (expected " << ncols << ", got " << vals.size() << ")\n";
+		if (vals.size() > 1) {
+			std::cerr << "Error: --cov file must contain exactly one value column (sample<TAB>hi).\n"
+			          << "  Got " << vals.size() << " numeric columns at sample: " << sample << "\n"
+			          << "  Multi-column covariates are no longer supported; provide a single HI column.\n";
 			return false;
 		}
 
-		m[sample] = std::move(vals);
+		m[sample] = vals[0];
 	}
 
-	if (ncols <= 0) {
-		std::cerr << "Error: no data rows found in covariate file: " << path << "\n";
+	if (m.empty()) {
+		std::cerr << "Error: no data rows found in --cov file: " << path << "\n";
 		return false;
 	}
 
-	H_out.resize(nsamples, ncols);
-
+	h_out.resize(nsamples);
 	int missing = 0;
 	for (int i = 0; i < nsamples; ++i) {
 		auto it = m.find(sample_names[i]);
-		if (it == m.end()) {
+		if (it == m.end())
 			++missing;
-		} else {
-			for (int j = 0; j < ncols; ++j)
-				H_out(i, j) = it->second[j];
-		}
+		else
+			h_out(i) = it->second;
 	}
 
 	if (missing > 0) {
-		std::cerr << "Error: covariate file missing " << missing << " / " << nsamples
+		std::cerr << "Error: --cov file missing " << missing << " / " << nsamples
 		          << " samples (must contain all samples).\n";
 		return false;
 	}
 
-	std::cout << "Loaded covariate matrix: " << nsamples << " samples x " << ncols
-	          << " covariate" << (ncols > 1 ? "s" : "") << " from: " << path << "\n";
+	std::cout << "Loaded HI from --cov file: " << nsamples << " samples from: " << path << "\n";
 	return true;
 }
 

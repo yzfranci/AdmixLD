@@ -111,26 +111,22 @@ The file must begin with exactly two comment header lines:
 - **`sgpos` / `egpos` / `n snps`** — genetic positions and SNP count (read but not used)
 - **`sample.0` / `sample.1`** — haplotype ancestry calls, must be `0` or `1`; any other value is treated as missing
 
-### Covariate TSV (`--cov`)
+### External HI File (`--cov`)
 
-Optional user-supplied covariate matrix used instead of the computed hybrid index for residualization. Tab-separated with an optional header row. Must contain all samples present in the input file.
-
-Supports one or more covariate columns (e.g., a single hybrid index, or PC1–PC3 from a PCA, etc...). Cannot handle missing values. 
+Optional user-supplied hybrid index used instead of the computed HI for residualization. Tab-separated, two columns: `sample` and `hi`. A header row is auto-detected. Must contain all samples present in the input file. Exactly one value column is required.
 
 ```
-sample    cov1      cov2      cov3
-CV0340    0.373028  0.021     -0.014
-CV0359    0.213722  -0.003    0.008
-CV0362    0.891145  0.041     0.002
+sample    hi
+CV0340    0.373028
+CV0359    0.213722
+CV0362    0.891145
 ```
-### Sample Trait TSV (`--sample-geno`)
+### Sample Haplotype TSV (`--sample-haplo`)
 
-Per-sample numeric haplotype/trait for correlating against all ancestry markers. Tab-separated. Missing values can be encoded as `.`, `NA`, `NaN`, `nan`, or `NAN`.
-
-This can be used to scan for correlation with the mitochondrial haplotype.
+Per-sample mitochondrial haplotype for correlating against all ancestry markers. Tab-separated, two columns: `sample` and haplotype value. Non-missing values must be **exactly `0` or `1`**; any other value is an error. Missing values can be encoded as `.`, `NA`, `NaN`, `nan`, or `NAN`.
 
 ```
-sample    trait
+sample    haplo
 CV0340    1
 CV0359    .
 CV0362    0
@@ -288,13 +284,13 @@ Used to scan correlations between a marker of interest against the rest of the m
 | `--target-chr STR` | Chromosome of single focus marker |
 | `--target-pos INT` | Position of single focus marker (exact match); reports that marker vs all others |
 
-### Sample Trait
+### Sample Haplotype
 
 Typically used to provide a mitochondrial haplotype that would not be contained in the VCF/MSP file.
 
 | Flag | Description |
 |------|-------------|
-| `--sample-geno FILE` | Per-sample numeric trait TSV; correlates haplotype/trait against all markers |
+| `--sample-haplo FILE` | Per-sample mitochondrial haplotype TSV (0 or 1 only); correlates against all markers |
 
 ### Permutation Testing
 
@@ -368,14 +364,23 @@ $$\text{HI}^{-c}_i = \frac{\text{num\_total}_i - \text{num}_{c,i}}{\text{den\_to
 
 ### Residualization
 
-Each marker's dosage vector is residualized on the covariate matrix $\mathbf{H}$ (samples × $k$) via ordinary least squares. By default $\mathbf{H}$ is the single-column genome-wide hybrid index; with `--cov` it can be any number of columns (e.g., PC1–PC3 from a PCA).
+Each marker's dosage vector is residualized on the hybrid index $h$ using a **plug-in** formula derived from the expected dosage under Hardy–Weinberg equilibrium in an admixed population. The slope relating dosage to ancestry is fixed by the biological model rather than estimated by regression, making the method more robust at small sample sizes.
 
-1. Centre each covariate column: $H^c_{il} = H_{il} - \bar{H}_l$
-2. Regress dosage of marker $j$ on covariates: $\hat{\boldsymbol{\beta}}_j = (\mathbf{H}^{cT} \mathbf{H}^c)^{-1} \mathbf{H}^{cT} \mathbf{d}_j$
-3. Residuals: $\boldsymbol{\epsilon}_j = \mathbf{d}_j - \bar{d}_j \mathbf{1} - \mathbf{H}^c \hat{\boldsymbol{\beta}}_j$
-4. Standardise: $Z_{ij} = (\epsilon_{ij} - \bar{\epsilon}_j) / \text{SD}(\boldsymbol{\epsilon}_j)$
+**Without `--ref-freq`** (markers assumed ancestry-diagnostic, $p_1 \approx 1$, $p_2 \approx 0$):
 
-The $k \times k$ system $(\mathbf{H}^{cT} \mathbf{H}^c)$ is factored once (LDLT) and reused across all markers. Markers with fewer than $k+2$ samples, a singular covariate matrix, or zero residual SD are excluded.
+$$\epsilon_{iw} = d_{iw} - 2 h_i \quad \text{(diploid)} \qquad \epsilon_{iw} = d_{iw} - h_i \quad \text{(phased)}$$
+
+**With `--ref-freq`** (per-marker parental frequencies known):
+
+$$\epsilon_{iw} = d_{iw} - 2\,(p_{2w} + \delta_w \cdot h_i) \quad \text{(diploid)} \qquad \epsilon_{iw} = d_{iw} - (p_{2w} + \delta_w \cdot h_i) \quad \text{(phased)}$$
+
+where $\delta_w = p_{1w} - p_{2w}$ after polarization ($\delta_w \geq 0$ always). In both cases the residuals are then mean-centred and standardised:
+
+$$Z_{iw} = \frac{\epsilon_{iw} - \bar{\epsilon}_w}{\text{SD}(\boldsymbol{\epsilon}_w)}$$
+
+Markers with zero residual SD are excluded as uninformative.
+
+**For `--sample-haplo`** (mitochondrial haplotype, haploid 0/1): the plug-in residual is $r_i = y_i - h_i$ (scale=1), then z-scored over non-missing entries.
 
 ### Correlation Scanning
 
@@ -437,5 +442,7 @@ Mean imputation is applied only when explicitly requested. This option is intend
 - **LOCO and permutations**: When using `--hi-mode excl-focus` with `--permute`, HI components are re-used across permutations for efficiency; only the mapping of HI to shuffled samples changes.
 - **`--msp` vs `--vcf`**: MSP input provides explicit tract start/end positions, so segment lengths for weighted HI are exact. VCF input infers lengths from consecutive marker positions (affected by `--pos-is-start`).
 - **`--cov` and LOCO**: `--cov` is incompatible with `--hi-mode excl-focus`. LOCO requires per-chromosome HI components derived from the marker data itself and cannot be computed for externally supplied covariates.
-- **`--cov` missing data**: No missing values are permitted in the covariate file. All samples in the input must be present.
+- **`--cov` format**: `--cov` now accepts exactly one value column (`sample<TAB>hi`). Files with multiple numeric columns are rejected with an error.
+- **Plug-in residualization**: AdmixLD uses a model-based plug-in formula (expected dosage = $2 h_i$ or $2(p_{2w} + \delta_w h_i)$) rather than OLS regression. This eliminates per-marker slope estimation and is more robust when sample sizes are small or markers are not perfectly ancestry-informative.
+- **`--sample-haplo` values**: Non-missing values must be exactly 0 or 1. Any other value (including 0.5) is rejected at load time. Use missing-value tokens (`.`, `NA`) for samples without haplotype data.
 - **`--keep-indv` and residualization**: The sample filter is applied **after** residualization. HI estimation, LOCO component building, and OLS residualization all use the full sample set to avoid biasing covariate estimation with a non-representative subset. Only the correlation scan (and permutations) use the filtered subset.

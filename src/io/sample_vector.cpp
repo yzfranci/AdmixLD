@@ -22,7 +22,7 @@ bool load_sample_vector_tsv(
 ) {
 	std::ifstream in(path);
 	if (!in) {
-		std::cerr << "Error: cannot open sample-geno file: " << path << "\n";
+		std::cerr << "Error: cannot open --sample-haplo file: " << path << "\n";
 		return false;
 	}
 
@@ -51,7 +51,7 @@ bool load_sample_vector_tsv(
 			map[sname] = v;
 		} catch (...) {
 			std::cerr << "Error: non-numeric value for sample '" << sname
-				<< "': '" << sval << "'. Provide numeric values (e.g. 0/1).\n";
+				<< "': '" << sval << "'.\n";
 			return false;
 		}
 	}
@@ -76,14 +76,24 @@ bool load_sample_vector_tsv(
 		}
 	}
 
-	std::cout << "Loaded sample-geno vector:\n";
+	std::cout << "Loaded sample-haplo vector:\n";
 	std::cout << "  file    = " << path << "\n";
 	std::cout << "  found   = " << found << "\n";
 	std::cout << "  missing = " << missing << "\n";
 
 	if (found < 3) {
-		std::cerr << "Error: too few non-missing sample-geno values (" << found << ").\n";
+		std::cerr << "Error: too few non-missing sample-haplo values (" << found << ").\n";
 		return false;
+	}
+
+	// Strict 0/1 validation
+	for (int i = 0; i < n; ++i) {
+		float v = y_out(i);
+		if (!std::isnan(v) && v != 0.0f && v != 1.0f) {
+			std::cerr << "Error: --sample-haplo requires strictly 0 or 1 values (use missing tokens for absent data).\n";
+			std::cerr << "  Sample '" << sample_names[i] << "' has value: " << v << "\n";
+			return false;
+		}
 	}
 
 	return true;

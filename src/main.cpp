@@ -33,7 +33,7 @@
 	3) Apply optional marker filters (--chr/--no-chr/--bed)
 	4) Build chromosome index (marker indices by chromosome)
 	5) Compute/load hybrid index (full-genome by default; filtered if --compute-hi)
-	6) Optional modes: HI-only, permutations, sample-geno scans
+	6) Optional modes: HI-only, permutations, sample-haplo scans
 	7) Residualize markers on HI and scan for LD hits
 */
 
@@ -51,7 +51,7 @@ static void usage() {
 		<< "  --max-dist INT         Intra only: max end-distance (bp) between marker pairs\n"
 		<< "  --max-windows N        Load at most N markers from the VCF (used solely for test runs and debugging)\n"
 		<< "  --min-callrate FLOAT   Minimum marker call rate; values <1.0 enable per-marker mean imputation (beta; might introduce bias).\n"
-		<< "  --cov FILE             Covariate file (TSV: for HI: sample<TAB>hi; For more covariates (PCA etc...) sample<TAB>cov1 [cov2 ...]; header optional); overrides computed HI\n"
+		<< "  --cov FILE             External HI file (TSV: sample<TAB>hi; single column only; header optional); overrides computed HI\n"
 		<< "  --hi-mode STR          HI correction: global (default) | excl-focus (LOCO/LOCO2; incompatible with --cov)\n"
 		<< "  --compute-hi           Compute HI using FILTERED markers only, write out.hi.tsv, and exit (ignored with --cov)\n"
 		<< "  --unweighted-hi        Use unweighted HI (mean(dosage)/2; legacy behavior; ignored with --cov)\n"
@@ -70,7 +70,7 @@ static void usage() {
 		<< "  --target-pos INT       Scan one target marker/pos vs all others (target position; matches single position)\n"
 		<< "  --ref-freq FILE        Parental allele frequency file (TSV: chrom pos p1 p2); VCF only\n"
 	<< "  --min-delta-afd FLOAT  Min |p1-p2| for --ref-freq markers (default: 0; dropped if below)\n"
-	<< "  --sample-geno FILE     Per-sample numeric mito haplotype/genotype/trait TSV: sample<TAB>value\n"
+	<< "  --sample-haplo FILE    Per-sample mitochondrial haplotype TSV: sample<TAB>value (0 or 1 only; missing allowed)\n"
 	<< "  --keep-indv FILE       Keep only samples listed in FILE (one ID per line)\n";
 }
 
@@ -89,7 +89,7 @@ struct CliOptions {
 	std::string target_chr;
 	int target_pos = -1;
 
-	std::string sample_geno_path;
+	std::string sample_haplo_path;
 	std::string keep_indv_path;
 	std::string ref_freq_path;
 	float min_delta_afd = 0.0f;
@@ -211,8 +211,8 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 			opt.has_target = true;
 			opt.target_pos = std::stoi(argv[++i]);
 
-		} else if (a == "--sample-geno" && i + 1 < argc) {
-			opt.sample_geno_path = argv[++i];
+		} else if (a == "--sample-haplo" && i + 1 < argc) {
+			opt.sample_haplo_path = argv[++i];
 
 		} else if (a == "--keep-indv" && i + 1 < argc) {
 			opt.keep_indv_path = argv[++i];
@@ -278,8 +278,8 @@ static int validate_options(const CliOptions& opt) {
 		return 2;
 	}
 
-	if (opt.phased && !opt.sample_geno_path.empty()) {
-		std::cerr << "Error: --phased is incompatible with --sample-geno\n";
+	if (opt.phased && !opt.sample_haplo_path.empty()) {
+		std::cerr << "Error: --phased is incompatible with --sample-haplo\n";
 		return 2;
 	}
 
@@ -721,11 +721,13 @@ static int resolve_target_marker(
 static bool residualize_markers(
 	Eigen::MatrixXf& Z,
 	const Eigen::MatrixXf& X,
-	const Eigen::MatrixXf& H,
-	int& n_valid_markers
+	const Eigen::VectorXf& h,
+	bool phased,
+	int& n_valid_markers,
+	const std::vector<MarkerFreq>* freqs = nullptr
 ) {
 	try {
-		Z = residualize_and_zscore(X, H, n_valid_markers);
+		Z = residualize_and_zscore(X, h, phased, n_valid_markers, freqs);
 	} catch (const std::exception& e) {
 		std::cerr << "Error: " << e.what() << "\n";
 		return false;
@@ -862,11 +864,11 @@ int main(int argc, char** argv) {
 	if (int rc = validate_options(cli); rc != 0)
 		return rc;
 
-	const bool sample_geno_mode = !cli.sample_geno_path.empty();
-	if (sample_geno_mode && cli.intra)
-		std::cout << "Note: --intra ignored in --sample-geno mode\n";
-	if (sample_geno_mode && cli.has_target)
-		std::cout << "Note: --target-* ignored in --sample-geno mode\n";
+	const bool sample_haplo_mode = !cli.sample_haplo_path.empty();
+	if (sample_haplo_mode && cli.intra)
+		std::cout << "Note: --intra ignored in --sample-haplo mode\n";
+	if (sample_haplo_mode && cli.has_target)
+		std::cout << "Note: --target-* ignored in --sample-haplo mode\n";
 
 	// Stage 2: Load markers from VCF or MSP
 	WindowMatrix wm;
@@ -984,15 +986,14 @@ int main(int argc, char** argv) {
 		polarize_X(X_full, freqs_full, cli.phased);
 	}
 
-	// Stage 5: Compute HI from markers or load covariate matrix from --cov
-	Eigen::MatrixXf H;
+	// Stage 5: Compute HI from markers or load from --cov
+	// h is always nsamples_diploid; residualize_and_zscore handles phased row indexing internally.
+	Eigen::VectorXf h;
 
 	if (!cli.cov_path.empty()) {
-		if (!load_cov_tsv(cli.cov_path, wm.sample_names, H))
+		if (!load_cov_tsv(cli.cov_path, wm.sample_names, h))
 			return 1;
 	} else {
-		Eigen::VectorXf h;
-
 		if (use_ref_freq) {
 			const int n_diploid = cli.phased ? (int)X_full.rows() / 2 : (int)X_full.rows();
 			h = compute_hi_freq(X_full, freqs_full, chroms_full, pos_full,
@@ -1010,20 +1011,6 @@ int main(int argc, char** argv) {
 			std::cout << "--compute-hi set: exiting after HI computation (no scans)\n";
 			return 0;
 		}
-
-		H.resize(h.size(), 1);
-		H.col(0) = h;
-	}
-
-	// In phased mode, duplicate H rows so H.rows() == X.rows() == 2*nsamples_diploid
-	if (cli.phased) {
-		const int k = (int)H.cols();
-		Eigen::MatrixXf H2(2 * nsamples_diploid, k);
-		for (int i = 0; i < nsamples_diploid; ++i) {
-			H2.row(2 * i)     = H.row(i);
-			H2.row(2 * i + 1) = H.row(i);
-		}
-		H = std::move(H2);
 	}
 
 	// Stage 6: Build HI components for excl-focus mode (full genome)
@@ -1063,31 +1050,31 @@ int main(int argc, char** argv) {
 			<< " pos=" << cli.target_pos << "\n";
 	}
 
-	// Stage 8: Sample-geno mode (trait/mito vs all markers)
+	// Stage 8: Sample-haplo mode (mitochondrial haplotype vs all markers)
 	Eigen::VectorXf gZ;
 	int g_valid = 0;
 
 	Eigen::VectorXf g;
 	bool g_loaded = false;
 
-	if (sample_geno_mode) {
-		if (!load_sample_vector_tsv(cli.sample_geno_path, wm.sample_names, g))
+	if (sample_haplo_mode) {
+		if (!load_sample_vector_tsv(cli.sample_haplo_path, wm.sample_names, g))
 			return 1;
 		g_loaded = true;
 
 		if (cli.hi_mode == "global") {
 			try {
-				gZ = residualize_and_zscore_vector(g, H, g_valid);
+				gZ = residualize_and_zscore_vector(g, h, g_valid);
 			} catch (const std::exception& e) {
-				std::cerr << "Error: sample-geno residualization failed: "
+				std::cerr << "Error: sample-haplo residualization failed: "
 					<< e.what() << "\n";
 				return 1;
 			}
 
-			std::cout << "Sample-geno residualization complete:\n";
+			std::cout << "Sample-haplo residualization complete:\n";
 			std::cout << "  valid_samples = " << g_valid << " / " << nsamples << "\n";
 		} else {
-			std::cout << "Sample-geno loaded (excl-focus mode: residualize per chromosome during scan)\n";
+			std::cout << "Sample-haplo loaded (excl-focus mode: residualize per chromosome during scan)\n";
 		}
 	}
 
@@ -1095,7 +1082,8 @@ int main(int argc, char** argv) {
 	Eigen::MatrixXf Z;
 	int n_valid_markers = 0;
 
-	if (!residualize_markers(Z, X, H, n_valid_markers))
+	if (!residualize_markers(Z, X, h, cli.phased, n_valid_markers,
+	                         use_ref_freq ? &freqs_scan : nullptr))
 		return 1;
 	if (!has_hc_full)
 		X.resize(0, 0);	// excl-focus mode needs X for per-pair re-residualization
@@ -1165,7 +1153,7 @@ int main(int argc, char** argv) {
 				for (auto& v : hc_freq_full.num_chr) filter_vec(v);
 				for (auto& v : hc_freq_full.den_chr) filter_vec(v);
 			}
-			// Filter sample-geno vector and its residualized form
+			// Filter sample-haplo vector and its residualized form
 			if (g_loaded) {
 				Eigen::VectorXf gf(n_keep);
 				for (int i = 0; i < n_keep; ++i) gf(i) = g(keep_idx[i]);
@@ -1192,10 +1180,10 @@ int main(int argc, char** argv) {
 	popt.min_pos_r = 0.0f;
 
 	// Stage 10a: Sample-geno permutation test
-	if (sample_geno_mode && cli.n_perm > 0) {
+	if (sample_haplo_mode && cli.n_perm > 0) {
 		std::vector<PermSummary> summ;
 
-		std::cout << "Permutation test (sample-geno vs markers):\n";
+		std::cout << "Permutation test (sample-haplo vs markers):\n";
 		std::cout << "  n_perm      = " << cli.n_perm << "\n";
 		std::cout << "  seed        = " << cli.seed << "\n";
 		std::cout << "  sample_size = " << cli.perm_sample << "\n";
@@ -1211,7 +1199,7 @@ int main(int argc, char** argv) {
 				return 1;
 		} else {
 			if (!g_loaded) {
-				std::cerr << "Error: sample-geno vector was not loaded\n";
+				std::cerr << "Error: sample-haplo vector was not loaded\n";
 				return 1;
 			}
 			if (!has_hc_full) {
@@ -1222,7 +1210,7 @@ int main(int argc, char** argv) {
 			if (use_ref_freq) {
 				perm_ok = permute_sample_vector_summary_excl_focus(
 					X, g, chroms, pos, markers_by_chr, chr_order,
-					hc_freq_full, popt, cli.seed, cli.n_perm, cli.perm_sample, summ
+					hc_freq_full, popt, cli.seed, cli.n_perm, cli.perm_sample, freqs_scan, summ
 				);
 			} else {
 				perm_ok = permute_sample_vector_summary_excl_focus(
@@ -1273,7 +1261,7 @@ int main(int argc, char** argv) {
 			if (use_ref_freq) {
 				perm_ok = permute_interchrom_summary_chrmarker_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
-					hc_freq_full, popt, cli.seed, cli.n_perm, cli.perm_sample, summ
+					hc_freq_full, popt, cli.seed, cli.n_perm, cli.perm_sample, freqs_scan, summ
 				);
 			} else {
 				perm_ok = permute_interchrom_summary_chrmarker_excl_focus(
@@ -1312,7 +1300,7 @@ int main(int argc, char** argv) {
 	opt.min_pos_r = min_pos_r;
 
 	// Stage 11a: Sample-geno scan overrides marker/marker scan
-	if (sample_geno_mode) {
+	if (sample_haplo_mode) {
 		std::string out_path = cli.out + ".samplegeno.hits.tsv";
 		std::string distrib_path;
 		if (cli.distrib)
@@ -1321,7 +1309,7 @@ int main(int argc, char** argv) {
 		long long tested = 0;
 		long long kept = 0;
 
-		std::cout << "Scan mode: sample-geno vs all markers\n";
+		std::cout << "Scan mode: sample-haplo vs all markers\n";
 
 		if (cli.hi_mode == "global") {
 			if (!scan_vector_vs_windows_write_hits(
@@ -1340,7 +1328,7 @@ int main(int argc, char** argv) {
 
 		} else {
 			if (!g_loaded) {
-				std::cerr << "Error: sample-geno vector was not loaded\n";
+				std::cerr << "Error: sample-haplo vector was not loaded\n";
 				return 1;
 			}
 			if (!has_hc_full) {
@@ -1353,7 +1341,7 @@ int main(int argc, char** argv) {
 				scan_ok = scan_vector_vs_windows_write_hits_excl_focus(
 					X, g, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed
 				);
 			} else {
 				scan_ok = scan_vector_vs_windows_write_hits_excl_focus(
@@ -1411,7 +1399,7 @@ int main(int argc, char** argv) {
 				scan_ok = scan_target_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, target_w, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed
 				);
 			} else {
 				scan_ok = scan_target_write_hits_excl_focus(
@@ -1427,7 +1415,7 @@ int main(int argc, char** argv) {
 				scan_ok = scan_markers_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed
 				);
 			} else {
 				scan_ok = scan_markers_write_hits_excl_focus(

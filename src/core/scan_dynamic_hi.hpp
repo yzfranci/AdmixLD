@@ -8,6 +8,7 @@
 
 #include "scan_markers.hpp"
 #include "hybrid_index.hpp"
+#include "../io/ref_freq.hpp"
 
 bool scan_markers_write_hits_excl_focus(
 	const Eigen::MatrixXf& X_scan,
@@ -36,6 +37,7 @@ bool scan_markers_write_hits_excl_focus(
 	const std::string& out_path,
 	long long& tested_pairs,
 	long long& kept_pairs,
+	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1
@@ -70,6 +72,7 @@ bool scan_target_write_hits_excl_focus(
 	const std::string& out_path,
 	long long& tested_pairs,
 	long long& kept_pairs,
+	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1
@@ -104,6 +107,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const std::string& out_path,
 	long long& tested_pairs,
 	long long& kept_pairs,
+	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1
@@ -134,6 +138,7 @@ bool permute_interchrom_summary_chrmarker_excl_focus(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
+	const std::vector<MarkerFreq>& freqs_scan,
 	std::vector<PermSummary>& summaries_out
 );
 
@@ -164,5 +169,6 @@ bool permute_sample_vector_summary_excl_focus(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
+	const std::vector<MarkerFreq>& freqs_scan,
 	std::vector<PermSummary>& summaries_out
 );
