@@ -139,13 +139,15 @@ static void compute_mean_sd_from_sample(
 	}
 }
 
-bool scan_markers_write_hits_excl_focus(
+template<typename HC, typename HiExcludeFn>
+static bool scan_markers_write_hits_excl_focus_T(
 	const Eigen::MatrixXf& X_scan,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
 	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsWeighted& hc_full,
+	const HC& hc_full,
+	HiExcludeFn hi_excluding,
 	const ScanOptions& opt,
 	const std::string& out_path,
 	long long& tested_pairs,
@@ -202,7 +204,7 @@ bool scan_markers_write_hits_excl_focus(
 		if (m < 2)
 			return;
 
-		Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr);
+		Eigen::VectorXf h = hi_excluding(hc_full, chr, std::string(""));
 
 		int n_valid = 0;
 		Eigen::MatrixXf Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid);
@@ -291,7 +293,7 @@ bool scan_markers_write_hits_excl_focus(
 		if (m1 == 0 || m2 == 0)
 			return;
 
-		Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr1, chr2);
+		Eigen::VectorXf h = hi_excluding(hc_full, chr1, chr2);
 
 		int n_valid1 = 0;
 		int n_valid2 = 0;
@@ -496,13 +498,65 @@ bool scan_markers_write_hits_excl_focus(
 	return true;
 }
 
-bool scan_target_write_hits_excl_focus(
+bool scan_markers_write_hits_excl_focus(
 	const Eigen::MatrixXf& X_scan,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
 	const std::vector<std::string>& chr_order_scan,
 	const HiComponentsWeighted& hc_full,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
+) {
+	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_weighted_excluding(hc, a, b);
+	};
+	return scan_markers_write_hits_excl_focus_T(
+		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
+		distrib_path, distrib_sample, distrib_seed
+	);
+}
+
+bool scan_markers_write_hits_excl_focus(
+	const Eigen::MatrixXf& X_scan,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HiComponentsFreq& hc_full,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
+) {
+	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_freq_excluding(hc, a, b);
+	};
+	return scan_markers_write_hits_excl_focus_T(
+		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
+		distrib_path, distrib_sample, distrib_seed
+	);
+}
+
+template<typename HC, typename HiExcludeFn>
+static bool scan_target_write_hits_excl_focus_T(
+	const Eigen::MatrixXf& X_scan,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HC& hc_full,
+	HiExcludeFn hi_excluding,
 	const ScanOptions& opt,
 	int target_w,
 	const std::string& out_path,
@@ -593,9 +647,9 @@ bool scan_target_write_hits_excl_focus(
 
 		Eigen::VectorXf h;
 		if (same_chr)
-			h = hi_from_components_weighted_excluding(hc_full, tchr);
+			h = hi_excluding(hc_full, tchr, std::string(""));
 		else
-			h = hi_from_components_weighted_excluding(hc_full, tchr, chr);
+			h = hi_excluding(hc_full, tchr, chr);
 
 		auto local_consider = [&](float r) {
 			if (!do_distrib)
@@ -832,14 +886,68 @@ bool scan_target_write_hits_excl_focus(
 	return true;
 }
 
-bool scan_vector_vs_windows_write_hits_excl_focus(
+bool scan_target_write_hits_excl_focus(
+	const Eigen::MatrixXf& X_scan,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HiComponentsWeighted& hc_full,
+	const ScanOptions& opt,
+	int target_w,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
+) {
+	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_weighted_excluding(hc, a, b);
+	};
+	return scan_target_write_hits_excl_focus_T(
+		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, target_w, out_path, tested_pairs, kept_pairs,
+		distrib_path, distrib_sample, distrib_seed
+	);
+}
+
+bool scan_target_write_hits_excl_focus(
+	const Eigen::MatrixXf& X_scan,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HiComponentsFreq& hc_full,
+	const ScanOptions& opt,
+	int target_w,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
+) {
+	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_freq_excluding(hc, a, b);
+	};
+	return scan_target_write_hits_excl_focus_T(
+		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, target_w, out_path, tested_pairs, kept_pairs,
+		distrib_path, distrib_sample, distrib_seed
+	);
+}
+
+template<typename HC, typename HiExcludeFn>
+static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 	const Eigen::MatrixXf& X_scan,
 	const Eigen::VectorXf& v_raw,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
 	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsWeighted& hc_full,
+	const HC& hc_full,
+	HiExcludeFn hi_excluding,
 	const ScanOptions& opt,
 	const std::string& out_path,
 	long long& tested_pairs,
@@ -911,7 +1019,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 		if (m == 0)
 			continue;
 
-		Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr);
+		Eigen::VectorXf h = hi_excluding(hc_full, chr, std::string(""));
 
 		int v_valid = 0;
 		Eigen::VectorXf vZ;
@@ -1095,13 +1203,67 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	return true;
 }
 
-bool permute_interchrom_summary_chrmarker_excl_focus(
+bool scan_vector_vs_windows_write_hits_excl_focus(
 	const Eigen::MatrixXf& X_scan,
+	const Eigen::VectorXf& v_raw,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
 	const std::vector<std::string>& chr_order_scan,
 	const HiComponentsWeighted& hc_full,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
+) {
+	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_weighted_excluding(hc, a, b);
+	};
+	return scan_vector_vs_windows_write_hits_excl_focus_T(
+		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
+		distrib_path, distrib_sample, distrib_seed
+	);
+}
+
+bool scan_vector_vs_windows_write_hits_excl_focus(
+	const Eigen::MatrixXf& X_scan,
+	const Eigen::VectorXf& v_raw,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HiComponentsFreq& hc_full,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	const std::string& distrib_path,
+	int distrib_sample,
+	uint64_t distrib_seed
+) {
+	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_freq_excluding(hc, a, b);
+	};
+	return scan_vector_vs_windows_write_hits_excl_focus_T(
+		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
+		distrib_path, distrib_sample, distrib_seed
+	);
+}
+
+template<typename HC, typename HiExcludeFn>
+static bool permute_interchrom_summary_chrmarker_excl_focus_T(
+	const Eigen::MatrixXf& X_scan,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HC& hc_full,
+	HiExcludeFn hi_excluding,
 	const ScanOptions& opt,
 	uint64_t seed,
 	int n_perm,
@@ -1162,7 +1324,7 @@ bool permute_interchrom_summary_chrmarker_excl_focus(
 				continue;
 			}
 
-			Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr1, chr2);
+			Eigen::VectorXf h = hi_excluding(hc_full, chr1, chr2);
 			int n_valid1 = 0, n_valid2 = 0;
 			pc.Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1);
 			pc.Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2);
@@ -1297,14 +1459,60 @@ bool permute_interchrom_summary_chrmarker_excl_focus(
 	return true;
 }
 
-bool permute_sample_vector_summary_excl_focus(
+bool permute_interchrom_summary_chrmarker_excl_focus(
+	const Eigen::MatrixXf& X_scan,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HiComponentsWeighted& hc_full,
+	const ScanOptions& opt,
+	uint64_t seed,
+	int n_perm,
+	int sample_size,
+	std::vector<PermSummary>& summaries_out
+) {
+	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_weighted_excluding(hc, a, b);
+	};
+	return permute_interchrom_summary_chrmarker_excl_focus_T(
+		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out
+	);
+}
+
+bool permute_interchrom_summary_chrmarker_excl_focus(
+	const Eigen::MatrixXf& X_scan,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HiComponentsFreq& hc_full,
+	const ScanOptions& opt,
+	uint64_t seed,
+	int n_perm,
+	int sample_size,
+	std::vector<PermSummary>& summaries_out
+) {
+	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_freq_excluding(hc, a, b);
+	};
+	return permute_interchrom_summary_chrmarker_excl_focus_T(
+		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out
+	);
+}
+
+template<typename HC, typename HiExcludeFn>
+static bool permute_sample_vector_summary_excl_focus_T(
 	const Eigen::MatrixXf& X_scan,
 	const Eigen::VectorXf& g_raw,
 	const std::vector<std::string>& chroms_scan,
 	const std::vector<int>& pos_scan,
 	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
 	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsWeighted& hc_full,
+	const HC& hc_full,
+	HiExcludeFn hi_excluding,
 	const ScanOptions& opt,
 	uint64_t seed,
 	int n_perm,
@@ -1354,7 +1562,7 @@ bool permute_sample_vector_summary_excl_focus(
 		if (cache[(size_t)c].m <= 0)
 			continue;
 
-		Eigen::VectorXf h = hi_from_components_weighted_excluding(hc_full, chr);
+		Eigen::VectorXf h = hi_excluding(hc_full, chr, std::string(""));
 
 		int g_valid = 0;
 		try {
@@ -1491,4 +1699,50 @@ bool permute_sample_vector_summary_excl_focus(
 	}
 
 	return true;
+}
+
+bool permute_sample_vector_summary_excl_focus(
+	const Eigen::MatrixXf& X_scan,
+	const Eigen::VectorXf& g_raw,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HiComponentsWeighted& hc_full,
+	const ScanOptions& opt,
+	uint64_t seed,
+	int n_perm,
+	int sample_size,
+	std::vector<PermSummary>& summaries_out
+) {
+	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_weighted_excluding(hc, a, b);
+	};
+	return permute_sample_vector_summary_excl_focus_T(
+		X_scan, g_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out
+	);
+}
+
+bool permute_sample_vector_summary_excl_focus(
+	const Eigen::MatrixXf& X_scan,
+	const Eigen::VectorXf& g_raw,
+	const std::vector<std::string>& chroms_scan,
+	const std::vector<int>& pos_scan,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
+	const std::vector<std::string>& chr_order_scan,
+	const HiComponentsFreq& hc_full,
+	const ScanOptions& opt,
+	uint64_t seed,
+	int n_perm,
+	int sample_size,
+	std::vector<PermSummary>& summaries_out
+) {
+	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
+		return hi_from_components_freq_excluding(hc, a, b);
+	};
+	return permute_sample_vector_summary_excl_focus_T(
+		X_scan, g_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
+		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out
+	);
 }

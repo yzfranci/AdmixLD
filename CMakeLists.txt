@@ -21,6 +21,7 @@ add_executable(admixld
 	src/io/msp_windows.cpp
 	src/io/bed.cpp
 	src/io/sample_vector.cpp
+	src/io/ref_freq.cpp
 	src/core/hybrid_index.cpp
 	src/core/residualize.cpp
 	src/core/scan_markers.cpp

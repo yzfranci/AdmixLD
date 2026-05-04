@@ -17,6 +17,7 @@
 #include "io/msp_windows.hpp"
 #include "io/bed.hpp"
 #include "io/sample_vector.hpp"
+#include "io/ref_freq.hpp"
 #include "core/hybrid_index.hpp"
 #include "core/residualize.hpp"
 #include "core/scan_markers.hpp"
@@ -67,7 +68,9 @@ static void usage() {
 		<< "  --bed FILE             Keep markers whose position is within BED intervals (chr start end; no header)\n"
 		<< "  --target-chr STR       Scan one target marker/pos vs all others (target chromosome)\n"
 		<< "  --target-pos INT       Scan one target marker/pos vs all others (target position; matches single position)\n"
-		<< "  --sample-geno FILE     Per-sample numeric mito haplotype/genotype/trait TSV: sample<TAB>value\n"
+		<< "  --ref-freq FILE        Parental allele frequency file (TSV: chrom pos p1 p2); VCF only\n"
+	<< "  --min-delta-afd FLOAT  Min |p1-p2| for --ref-freq markers (default: 0; dropped if below)\n"
+	<< "  --sample-geno FILE     Per-sample numeric mito haplotype/genotype/trait TSV: sample<TAB>value\n"
 	<< "  --keep-indv FILE       Keep only samples listed in FILE (one ID per line)\n";
 }
 
@@ -88,6 +91,8 @@ struct CliOptions {
 
 	std::string sample_geno_path;
 	std::string keep_indv_path;
+	std::string ref_freq_path;
+	float min_delta_afd = 0.0f;
 
 	std::string hi_mode = "global";	// global | excl-focus
 
@@ -212,6 +217,12 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--keep-indv" && i + 1 < argc) {
 			opt.keep_indv_path = argv[++i];
 
+		} else if (a == "--ref-freq" && i + 1 < argc) {
+			opt.ref_freq_path = argv[++i];
+
+		} else if (a == "--min-delta-afd" && i + 1 < argc) {
+			opt.min_delta_afd = std::stof(argv[++i]);
+
 		} else if (a == "--min-neg-r" && i + 1 < argc) {
 			opt.min_neg_r = std::stof(argv[++i]);
 			opt.has_min_neg_r = true;
@@ -300,6 +311,11 @@ static int validate_options(const CliOptions& opt) {
 
 	if (opt.min_callrate < 0.0 || opt.min_callrate > 1.0) {
 		std::cerr << "Error: --min-callrate must be in [0,1]\n";
+		return 2;
+	}
+
+	if (opt.min_delta_afd < 0.0f) {
+		std::cerr << "Error: --min-delta-afd must be >= 0\n";
 		return 2;
 	}
 
@@ -603,12 +619,17 @@ static bool write_hi_and_print_summary(
 	const std::string& hi_out_path,
 	const WindowMatrix& wm,
 	const Eigen::VectorXf& h,
-	const CliOptions& opt
+	const CliOptions& opt,
+	bool use_ref_freq = false
 ) {
-	std::cout << "HI mode: "
-		<< (opt.unweighted_hi ? "unweighted" : "weighted")
-		<< (opt.unweighted_hi ? "" : (opt.pos_is_start ? " (pos=start)" : " (pos=end)"))
-		<< "\n";
+	if (use_ref_freq) {
+		std::cout << "HI mode: freq-based (weighted by delta^2)\n";
+	} else {
+		std::cout << "HI mode: "
+			<< (opt.unweighted_hi ? "unweighted" : "weighted")
+			<< (opt.unweighted_hi ? "" : (opt.pos_is_start ? " (pos=start)" : " (pos=end)"))
+			<< "\n";
+	}
 
 	if (!write_hi_tsv(hi_out_path, wm.sample_names, h))
 		return false;
@@ -759,7 +780,11 @@ static void write_perm_summary_tsv(
 	}
 }
 
-static bool apply_sample_filter(WindowMatrix& wm, const std::string& keep_indv_path) {
+static bool compute_keep_sample_idx(
+	const std::string& keep_indv_path,
+	const std::vector<std::string>& sample_names,
+	std::vector<int>& keep_idx
+) {
 	std::ifstream f(keep_indv_path);
 	if (!f) {
 		std::cerr << "Error: cannot open --keep-indv file: " << keep_indv_path << "\n";
@@ -780,12 +805,12 @@ static bool apply_sample_filter(WindowMatrix& wm, const std::string& keep_indv_p
 		return false;
 	}
 
-	const int n_dip = wm.nsamples_diploid;
-	std::vector<int> keep_idx;
+	const int n_dip = (int)sample_names.size();
+	keep_idx.clear();
 	keep_idx.reserve((size_t)n_dip);
 
 	for (int i = 0; i < n_dip; ++i) {
-		if (keep_set.count(wm.sample_names[i]))
+		if (keep_set.count(sample_names[i]))
 			keep_idx.push_back(i);
 	}
 
@@ -794,37 +819,9 @@ static bool apply_sample_filter(WindowMatrix& wm, const std::string& keep_indv_p
 		return false;
 	}
 
-	const int n_keep = (int)keep_idx.size();
-
-	std::cout << "Sample filter (--keep-indv):\n";
+	std::cout << "Sample filter (--keep-indv, applied after residualization):\n";
 	std::cout << "  requested = " << keep_set.size() << "\n";
-	std::cout << "  matched   = " << n_keep << " / " << n_dip << "\n";
-
-	if (n_keep == n_dip)
-		return true;
-
-	const int nwin = (int)wm.X.cols();
-
-	if (!wm.phased) {
-		Eigen::MatrixXf Xf(n_keep, nwin);
-		for (int i = 0; i < n_keep; ++i)
-			Xf.row(i) = wm.X.row(keep_idx[i]);
-		wm.X = std::move(Xf);
-	} else {
-		Eigen::MatrixXf Xf(2 * n_keep, nwin);
-		for (int i = 0; i < n_keep; ++i) {
-			Xf.row(2 * i)     = wm.X.row(2 * keep_idx[i]);
-			Xf.row(2 * i + 1) = wm.X.row(2 * keep_idx[i] + 1);
-		}
-		wm.X = std::move(Xf);
-	}
-
-	std::vector<std::string> names_f;
-	names_f.reserve((size_t)n_keep);
-	for (int i : keep_idx)
-		names_f.push_back(wm.sample_names[i]);
-	wm.sample_names = std::move(names_f);
-	wm.nsamples_diploid = n_keep;
+	std::cout << "  matched   = " << (int)keep_idx.size() << " / " << n_dip << "\n";
 
 	return true;
 }
@@ -876,6 +873,10 @@ int main(int argc, char** argv) {
 	{
 		const int max_win = cli.max_windows;
 		if (!cli.vcf_path.empty()) {
+			if (cli.ref_freq_path.empty() && cli.cov_path.empty()) {
+				std::cerr << "Warning: VCF input without --ref-freq: HI computed as mean(dosage)/2 "
+				             "(fixed-differences assumption). Use --ref-freq to supply parental allele frequencies.\n";
+			}
 			VcfLoadOptions vopt;
 			vopt.max_windows = max_win;
 			vopt.phased = cli.phased;
@@ -883,6 +884,8 @@ int main(int argc, char** argv) {
 		} else {
 			if (cli.pos_is_start)
 				std::cerr << "Warning: --pos-is-start has no effect with --msp (exact tract lengths are used).\n";
+			if (!cli.ref_freq_path.empty())
+				std::cerr << "Warning: --ref-freq is ignored with --msp (MSP provides exact local ancestry).\n";
 			MspLoadOptions mopt;
 			mopt.max_windows = max_win;
 			mopt.phased = cli.phased;
@@ -890,9 +893,11 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	// Stage 2b: Apply optional sample filter (before X/X_full split)
-	if (!cli.keep_indv_path.empty()) {
-		if (!apply_sample_filter(wm, cli.keep_indv_path))
+	// Stage 2c: Load ref_freq map (VCF only; ignored with MSP as warned above)
+	const bool use_ref_freq = !cli.ref_freq_path.empty() && cli.msp_path.empty();
+	std::unordered_map<std::string, MarkerFreq> ref_freq_map;
+	if (use_ref_freq) {
+		if (!load_ref_freq_map(cli.ref_freq_path, ref_freq_map))
 			return 1;
 	}
 
@@ -918,6 +923,19 @@ int main(int argc, char** argv) {
 	// Stage 3b: Apply optional callrate filters
 	if (!apply_callrate_filter(X, chroms, pos, pos_start, wm.sample_names, cli.min_callrate))
 		return 1;
+
+	// Stage 3c: Apply ref_freq filter and polarize scan markers (X)
+	std::vector<MarkerFreq> freqs_scan;
+	if (use_ref_freq) {
+		match_ref_freq(ref_freq_map, chroms, pos, freqs_scan);
+		int nkeep = apply_ref_freq_filter(X, chroms, pos, pos_start, freqs_scan, cli.min_delta_afd);
+		if (nkeep == 0) {
+			std::cerr << "Error: no markers remain after --ref-freq filter.\n";
+			return 1;
+		}
+		int n_flipped = polarize_X(X, freqs_scan, cli.phased);
+		std::cout << "Polarized " << n_flipped << " / " << nkeep << " scan markers (p2 > p1)\n";
+	}
 
 	if (cli.min_callrate < 1.0) {
 		std::cout << "Missing-data handling: mean-imputing per marker (enabled by --min-callrate < 1.0)\n";
@@ -959,6 +977,13 @@ int main(int argc, char** argv) {
 	build_markers_by_chr_sorted(chroms, pos, markers_by_chr, chr_order);
 	std::cout << "Chromosomes in loaded markers: " << chr_order.size() << "\n";
 
+	// Stage 4b: Match and polarize freqs for full marker set (for HI + LOCO)
+	std::vector<MarkerFreq> freqs_full;
+	if (use_ref_freq) {
+		match_ref_freq(ref_freq_map, chroms_full, pos_full, freqs_full);
+		polarize_X(X_full, freqs_full, cli.phased);
+	}
+
 	// Stage 5: Compute HI from markers or load covariate matrix from --cov
 	Eigen::MatrixXf H;
 
@@ -967,11 +992,18 @@ int main(int argc, char** argv) {
 			return 1;
 	} else {
 		Eigen::VectorXf h;
-		if (!compute_hi(h, X, chroms, pos, pos_start, X_full, chroms_full, pos_full, pos_start_full, cli))
-			return 1;
+
+		if (use_ref_freq) {
+			const int n_diploid = cli.phased ? (int)X_full.rows() / 2 : (int)X_full.rows();
+			h = compute_hi_freq(X_full, freqs_full, chroms_full, pos_full,
+			                    cli.pos_is_start, pos_start_full, cli.phased, n_diploid);
+		} else {
+			if (!compute_hi(h, X, chroms, pos, pos_start, X_full, chroms_full, pos_full, pos_start_full, cli))
+				return 1;
+		}
 
 		std::string hi_out_path = cli.out + ".hi.tsv";
-		if (!write_hi_and_print_summary(hi_out_path, wm, h, cli))
+		if (!write_hi_and_print_summary(hi_out_path, wm, h, cli, use_ref_freq))
 			return 1;
 
 		if (cli.compute_hi_only) {
@@ -996,9 +1028,24 @@ int main(int argc, char** argv) {
 
 	// Stage 6: Build HI components for excl-focus mode (full genome)
 	HiComponentsWeighted hc_full;
+	HiComponentsFreq hc_freq_full;
 	bool has_hc_full = false;
-	if (!build_hi_components_if_needed(hc_full, has_hc_full, X_full, chroms_full, pos_full, pos_start_full, cli))
-		return 2;
+
+	if (cli.hi_mode == "excl-focus") {
+		if (cli.unweighted_hi && !use_ref_freq) {
+			std::cerr << "Error: --hi-mode excl-focus currently requires weighted HI (omit --unweighted-hi)\n";
+			return 2;
+		}
+		if (use_ref_freq) {
+			hc_freq_full = build_hi_components_freq(
+				X_full, freqs_full, chroms_full, pos_full, cli.pos_is_start, pos_start_full
+			);
+		} else {
+			if (!build_hi_components_if_needed(hc_full, has_hc_full, X_full, chroms_full, pos_full, pos_start_full, cli))
+				return 2;
+		}
+		has_hc_full = true;
+	}
 	X_full.resize(0, 0);
 
 	// Stage 7: Resolve target marker (after filtering)
@@ -1058,6 +1105,80 @@ int main(int argc, char** argv) {
 	print_residualization_sanity(Z);
 	std::cout << std::flush;
 
+	// Stage 9b: Apply sample filter post-residualization
+	if (!cli.keep_indv_path.empty()) {
+		std::vector<int> keep_idx;
+		if (!compute_keep_sample_idx(cli.keep_indv_path, wm.sample_names, keep_idx))
+			return 1;
+		const int n_keep = (int)keep_idx.size();
+		if (n_keep < nsamples_diploid) {
+			const int nmarkers_z = (int)Z.cols();
+			// Filter Z (scan marker residuals)
+			if (!cli.phased) {
+				Eigen::MatrixXf Zf(n_keep, nmarkers_z);
+				for (int i = 0; i < n_keep; ++i) Zf.row(i) = Z.row(keep_idx[i]);
+				Z = std::move(Zf);
+			} else {
+				Eigen::MatrixXf Zf(2 * n_keep, nmarkers_z);
+				for (int i = 0; i < n_keep; ++i) {
+					Zf.row(2 * i)     = Z.row(2 * keep_idx[i]);
+					Zf.row(2 * i + 1) = Z.row(2 * keep_idx[i] + 1);
+				}
+				Z = std::move(Zf);
+			}
+			// Filter X (non-empty only in excl-focus mode)
+			if (X.size() > 0) {
+				if (!cli.phased) {
+					Eigen::MatrixXf Xf(n_keep, X.cols());
+					for (int i = 0; i < n_keep; ++i) Xf.row(i) = X.row(keep_idx[i]);
+					X = std::move(Xf);
+				} else {
+					Eigen::MatrixXf Xf(2 * n_keep, X.cols());
+					for (int i = 0; i < n_keep; ++i) {
+						Xf.row(2 * i)     = X.row(2 * keep_idx[i]);
+						Xf.row(2 * i + 1) = X.row(2 * keep_idx[i] + 1);
+					}
+					X = std::move(Xf);
+				}
+			}
+			// Filter hc_full per-sample vectors (weighted LOCO components)
+			if (has_hc_full && !use_ref_freq) {
+				auto filter_vec = [&](Eigen::VectorXf& v) {
+					Eigen::VectorXf vf(n_keep);
+					for (int i = 0; i < n_keep; ++i) vf(i) = v(keep_idx[i]);
+					v = std::move(vf);
+				};
+				filter_vec(hc_full.wsum_total);
+				filter_vec(hc_full.wtot_total);
+				for (auto& v : hc_full.wsum_chr) filter_vec(v);
+				for (auto& v : hc_full.wtot_chr) filter_vec(v);
+			}
+			// Filter hc_freq_full per-sample vectors (freq-based LOCO components)
+			if (has_hc_full && use_ref_freq) {
+				auto filter_vec = [&](Eigen::VectorXf& v) {
+					Eigen::VectorXf vf(n_keep);
+					for (int i = 0; i < n_keep; ++i) vf(i) = v(keep_idx[i]);
+					v = std::move(vf);
+				};
+				filter_vec(hc_freq_full.num_total);
+				filter_vec(hc_freq_full.den_total);
+				for (auto& v : hc_freq_full.num_chr) filter_vec(v);
+				for (auto& v : hc_freq_full.den_chr) filter_vec(v);
+			}
+			// Filter sample-geno vector and its residualized form
+			if (g_loaded) {
+				Eigen::VectorXf gf(n_keep);
+				for (int i = 0; i < n_keep; ++i) gf(i) = g(keep_idx[i]);
+				g = std::move(gf);
+			}
+			if (gZ.size() > 0) {
+				Eigen::VectorXf gZf(n_keep);
+				for (int i = 0; i < n_keep; ++i) gZf(i) = gZ(keep_idx[i]);
+				gZ = std::move(gZf);
+			}
+		}
+	}
+
 	// Stage 10: Scan options for permutations (symmetric only)
 	ScanOptions popt;
 	popt.intra = cli.intra;
@@ -1097,20 +1218,19 @@ int main(int argc, char** argv) {
 				std::cerr << "Error: HI components missing for excl-focus mode\n";
 				return 1;
 			}
-			if (!permute_sample_vector_summary_excl_focus(
-				X,
-				g,
-				chroms,
-				pos,
-				markers_by_chr,
-				chr_order,
-				hc_full,
-				popt,
-				cli.seed,
-				cli.n_perm,
-				cli.perm_sample,
-				summ
-			))
+			bool perm_ok;
+			if (use_ref_freq) {
+				perm_ok = permute_sample_vector_summary_excl_focus(
+					X, g, chroms, pos, markers_by_chr, chr_order,
+					hc_freq_full, popt, cli.seed, cli.n_perm, cli.perm_sample, summ
+				);
+			} else {
+				perm_ok = permute_sample_vector_summary_excl_focus(
+					X, g, chroms, pos, markers_by_chr, chr_order,
+					hc_full, popt, cli.seed, cli.n_perm, cli.perm_sample, summ
+				);
+			}
+			if (!perm_ok)
 				return 1;
 		}
 
@@ -1149,19 +1269,19 @@ int main(int argc, char** argv) {
 				std::cerr << "Error: HI components missing for excl-focus mode\n";
 				return 1;
 			}
-			if (!permute_interchrom_summary_chrmarker_excl_focus(
-				X,
-				chroms,
-				pos,
-				markers_by_chr,
-				chr_order,
-				hc_full,
-				popt,
-				cli.seed,
-				cli.n_perm,
-				cli.perm_sample,
-				summ
-			))
+			bool perm_ok;
+			if (use_ref_freq) {
+				perm_ok = permute_interchrom_summary_chrmarker_excl_focus(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_freq_full, popt, cli.seed, cli.n_perm, cli.perm_sample, summ
+				);
+			} else {
+				perm_ok = permute_interchrom_summary_chrmarker_excl_focus(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_full, popt, cli.seed, cli.n_perm, cli.perm_sample, summ
+				);
+			}
+			if (!perm_ok)
 				return 1;
 		}
 
@@ -1228,22 +1348,21 @@ int main(int argc, char** argv) {
 				return 1;
 			}
 
-			if (!scan_vector_vs_windows_write_hits_excl_focus(
-				X,
-				g,
-				chroms,
-				pos,
-				markers_by_chr,
-				chr_order,
-				hc_full,
-				opt,
-				out_path,
-				tested,
-				kept,
-				distrib_path,
-				cli.distrib_sample,
-				cli.seed
-			))
+			bool scan_ok;
+			if (use_ref_freq) {
+				scan_ok = scan_vector_vs_windows_write_hits_excl_focus(
+					X, g, chroms, pos, markers_by_chr, chr_order,
+					hc_freq_full, opt, out_path, tested, kept,
+					distrib_path, cli.distrib_sample, cli.seed
+				);
+			} else {
+				scan_ok = scan_vector_vs_windows_write_hits_excl_focus(
+					X, g, chroms, pos, markers_by_chr, chr_order,
+					hc_full, opt, out_path, tested, kept,
+					distrib_path, cli.distrib_sample, cli.seed
+				);
+			}
+			if (!scan_ok)
 				return 1;
 		}
 
@@ -1287,40 +1406,37 @@ int main(int argc, char** argv) {
 		}
 	} else {
 		if (target_w >= 0) {
-			if (!scan_target_write_hits_excl_focus(
-				X,
-				chroms,
-				pos,
-				markers_by_chr,
-				chr_order,
-				hc_full,
-				opt,
-				target_w,
-				out_path,
-				tested,
-				kept,
-				distrib_path,
-				cli.distrib_sample,
-				cli.seed
-			))
-				return 1;
+			bool scan_ok;
+			if (use_ref_freq) {
+				scan_ok = scan_target_write_hits_excl_focus(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_freq_full, opt, target_w, out_path, tested, kept,
+					distrib_path, cli.distrib_sample, cli.seed
+				);
+			} else {
+				scan_ok = scan_target_write_hits_excl_focus(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_full, opt, target_w, out_path, tested, kept,
+					distrib_path, cli.distrib_sample, cli.seed
+				);
+			}
+			if (!scan_ok) return 1;
 		} else {
-			if (!scan_markers_write_hits_excl_focus(
-				X,
-				chroms,
-				pos,
-				markers_by_chr,
-				chr_order,
-				hc_full,
-				opt,
-				out_path,
-				tested,
-				kept,
-				distrib_path,
-				cli.distrib_sample,
-				cli.seed
-			))
-				return 1;
+			bool scan_ok;
+			if (use_ref_freq) {
+				scan_ok = scan_markers_write_hits_excl_focus(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_freq_full, opt, out_path, tested, kept,
+					distrib_path, cli.distrib_sample, cli.seed
+				);
+			} else {
+				scan_ok = scan_markers_write_hits_excl_focus(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_full, opt, out_path, tested, kept,
+					distrib_path, cli.distrib_sample, cli.seed
+				);
+			}
+			if (!scan_ok) return 1;
 		}
 	}
 

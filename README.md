@@ -85,6 +85,7 @@ AdmixLD accepts two input formats:
 Optional inputs:
 
 - **`--cov FILE`**: Pre-computed covariate matrix (TSV) — one or more columns (e.g., hybrid index or PCA scores) — used instead of the internally computed HI for residualization.
+- **`--ref-freq FILE`**: Parental allele frequency file (TSV: `chrom`, `pos`, `p1`, `p2`). When supplied with `--vcf`, enables frequency-based HI estimation and allele polarization (see [Frequency-Based HI](#frequency-based-hi-computation---ref-freq)).
 - **`--bed FILE`**: BED file of genomic intervals; only markers within these regions are retained.
 - **`--sample-geno FILE`**: Per-sample numeric trait TSV; correlates the trait against all ancestry markers instead of running a pairwise scan.
 
