@@ -105,13 +105,13 @@ Eigen::VectorXf hi_from_components_freq_excluding(
 	const std::string& exclude_chrB = ""
 );
 
-// Load covariate matrix from TSV: sample<TAB>cov1 [<TAB>cov2 ...] (header allowed).
-// Number of covariate columns is inferred from the first data row.
+// Load a single-column HI file from TSV: sample<TAB>hi (header allowed).
+// Exactly one value column is required; returns false if more columns are found.
 // Requires all samples to be present; no missing values allowed.
 bool load_cov_tsv(
 	const std::string& path,
 	const std::vector<std::string>& sample_names,
-	Eigen::MatrixXf& H_out
+	Eigen::VectorXf& h_out
 );
 
 // Write hybrid index to TSV: sample<TAB>hi

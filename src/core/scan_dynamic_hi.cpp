@@ -154,7 +154,8 @@ static bool scan_markers_write_hits_excl_focus_T(
 	long long& kept_pairs,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	const int nsamples = opt.nsamples;
 	const int tile_size = opt.tile_size;
@@ -207,7 +208,7 @@ static bool scan_markers_write_hits_excl_focus_T(
 		Eigen::VectorXf h = hi_excluding(hc_full, chr, std::string(""));
 
 		int n_valid = 0;
-		Eigen::MatrixXf Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid);
+		Eigen::MatrixXf Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid, freqs_scan);
 
 		std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
 		if (!ofp) {
@@ -297,8 +298,8 @@ static bool scan_markers_write_hits_excl_focus_T(
 
 		int n_valid1 = 0;
 		int n_valid2 = 0;
-		Eigen::MatrixXf Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1);
-		Eigen::MatrixXf Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2);
+		Eigen::MatrixXf Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1, freqs_scan);
+		Eigen::MatrixXf Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2, freqs_scan);
 
 		std::ofstream ofp(part_paths[(size_t)tid], std::ios::out | std::ios::app);
 		if (!ofp) {
@@ -534,6 +535,7 @@ bool scan_markers_write_hits_excl_focus(
 	const std::string& out_path,
 	long long& tested_pairs,
 	long long& kept_pairs,
+	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed
@@ -544,7 +546,7 @@ bool scan_markers_write_hits_excl_focus(
 	return scan_markers_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed
+		distrib_path, distrib_sample, distrib_seed, &freqs_scan
 	);
 }
 
@@ -564,7 +566,8 @@ static bool scan_target_write_hits_excl_focus_T(
 	long long& kept_pairs,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	const bool do_distrib = (!distrib_path.empty());
 	if (distrib_sample <= 0)
@@ -659,7 +662,7 @@ static bool scan_target_write_hits_excl_focus_T(
 
 		if (same_chr) {
 			int n_valid = 0;
-			Eigen::MatrixXf Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid);
+			Eigen::MatrixXf Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid, freqs_scan);
 
 			int j_target = -1;
 			for (int j = 0; j < m; ++j) {
@@ -724,11 +727,11 @@ static bool scan_target_write_hits_excl_focus_T(
 			tvec[0] = target_w;
 
 			int n_valid_t = 0;
-			Eigen::MatrixXf Zt = residualize_and_zscore_subset(X_scan, h, tvec, n_valid_t);
+			Eigen::MatrixXf Zt = residualize_and_zscore_subset(X_scan, h, tvec, n_valid_t, freqs_scan);
 			Eigen::VectorXf v = Zt.col(0);
 
 			int n_valid_b = 0;
-			Eigen::MatrixXf Zb = residualize_and_zscore_subset(X_scan, h, idx, n_valid_b);
+			Eigen::MatrixXf Zb = residualize_and_zscore_subset(X_scan, h, idx, n_valid_b, freqs_scan);
 
 			Eigen::MatrixXf B(nsamples, tile_size);
 			Eigen::RowVectorXf R(tile_size);
@@ -924,6 +927,7 @@ bool scan_target_write_hits_excl_focus(
 	const std::string& out_path,
 	long long& tested_pairs,
 	long long& kept_pairs,
+	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed
@@ -934,7 +938,7 @@ bool scan_target_write_hits_excl_focus(
 	return scan_target_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, target_w, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed
+		distrib_path, distrib_sample, distrib_seed, &freqs_scan
 	);
 }
 
@@ -954,7 +958,8 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 	long long& kept_pairs,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
@@ -1032,7 +1037,7 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 		int n_valid = 0;
 		Eigen::MatrixXf Zc;
 		try {
-			Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid);
+			Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid, freqs_scan);
 		} catch (...) {
 			continue;
 		}
@@ -1071,7 +1076,7 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 				consider_distrib(td[(size_t)tid], r, distrib_sample);
 
 			if (keep_hit_r(r, opt)) {
-				ofp << "sample_geno"
+				ofp << "sample_haplo"
 					<< "\t" << w
 					<< "\t" << chroms_scan[w]
 					<< "\t" << pos_scan[w]
@@ -1241,6 +1246,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const std::string& out_path,
 	long long& tested_pairs,
 	long long& kept_pairs,
+	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed
@@ -1251,7 +1257,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	return scan_vector_vs_windows_write_hits_excl_focus_T(
 		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed
+		distrib_path, distrib_sample, distrib_seed, &freqs_scan
 	);
 }
 
@@ -1268,7 +1274,8 @@ static bool permute_interchrom_summary_chrmarker_excl_focus_T(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
-	std::vector<PermSummary>& summaries_out
+	std::vector<PermSummary>& summaries_out,
+	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	(void)chroms_scan;
 	(void)pos_scan;
@@ -1326,8 +1333,8 @@ static bool permute_interchrom_summary_chrmarker_excl_focus_T(
 
 			Eigen::VectorXf h = hi_excluding(hc_full, chr1, chr2);
 			int n_valid1 = 0, n_valid2 = 0;
-			pc.Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1);
-			pc.Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2);
+			pc.Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1, freqs_scan);
+			pc.Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2, freqs_scan);
 			pc.ok = true;
 
 			pairs.push_back(std::move(pc));
@@ -1492,6 +1499,7 @@ bool permute_interchrom_summary_chrmarker_excl_focus(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
+	const std::vector<MarkerFreq>& freqs_scan,
 	std::vector<PermSummary>& summaries_out
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
@@ -1499,7 +1507,7 @@ bool permute_interchrom_summary_chrmarker_excl_focus(
 	};
 	return permute_interchrom_summary_chrmarker_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
-		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out
+		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out, &freqs_scan
 	);
 }
 
@@ -1517,7 +1525,8 @@ static bool permute_sample_vector_summary_excl_focus_T(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
-	std::vector<PermSummary>& summaries_out
+	std::vector<PermSummary>& summaries_out,
+	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	(void)chroms_scan;
 	(void)pos_scan;
@@ -1573,7 +1582,7 @@ static bool permute_sample_vector_summary_excl_focus_T(
 
 		int n_valid = 0;
 		try {
-			cache[(size_t)c].Zc = residualize_and_zscore_subset(X_scan, h, *cache[(size_t)c].idx, n_valid);
+			cache[(size_t)c].Zc = residualize_and_zscore_subset(X_scan, h, *cache[(size_t)c].idx, n_valid, freqs_scan);
 		} catch (...) {
 			continue;
 		}
@@ -1592,7 +1601,7 @@ static bool permute_sample_vector_summary_excl_focus_T(
 	summaries_out.clear();
 	summaries_out.resize((size_t)n_perm);
 
-	std::cout << "Permutation test (excl-focus, sample-geno; full shuffle): " << n_perm << " replicates";
+	std::cout << "Permutation test (excl-focus, sample-haplo; full shuffle): " << n_perm << " replicates";
 	#ifdef ADMIXLD_HAS_OPENMP
 	std::cout << " using " << nthreads << " threads";
 	#endif
@@ -1736,6 +1745,7 @@ bool permute_sample_vector_summary_excl_focus(
 	uint64_t seed,
 	int n_perm,
 	int sample_size,
+	const std::vector<MarkerFreq>& freqs_scan,
 	std::vector<PermSummary>& summaries_out
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
@@ -1743,6 +1753,6 @@ bool permute_sample_vector_summary_excl_focus(
 	};
 	return permute_sample_vector_summary_excl_focus_T(
 		X_scan, g_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
-		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out
+		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out, &freqs_scan
 	);
 }
