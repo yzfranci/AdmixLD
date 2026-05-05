@@ -817,11 +817,11 @@ static bool compute_keep_sample_idx(
 	}
 
 	if (keep_idx.empty()) {
-		std::cerr << "Error: no samples remain after --keep-indv filtering.\n";
+		std::cerr << "Error: --keep-indv: no samples matched in the input file.\n";
 		return false;
 	}
 
-	std::cout << "Sample filter (--keep-indv, applied after residualization):\n";
+	std::cout << "Sample filter (--keep-indv, applied before HI and residualization):\n";
 	std::cout << "  requested = " << keep_set.size() << "\n";
 	std::cout << "  matched   = " << (int)keep_idx.size() << " / " << n_dip << "\n";
 
@@ -903,8 +903,8 @@ int main(int argc, char** argv) {
 			return 1;
 	}
 
-	const int nsamples_diploid = wm.nsamples_diploid;
-	const int nsamples = (int)wm.sample_names.size();	// diploid sample count for HI output / reporting
+	int nsamples_diploid = wm.nsamples_diploid;
+	int nsamples = (int)wm.sample_names.size();	// diploid sample count for HI output / reporting
 
 	Eigen::MatrixXf X = std::move(wm.X);
 	Eigen::MatrixXf X_full = X;
@@ -937,6 +937,38 @@ int main(int argc, char** argv) {
 		}
 		int n_flipped = polarize_X(X, freqs_scan, cli.phased);
 		std::cout << "Polarized " << n_flipped << " / " << nkeep << " scan markers (p2 > p1)\n";
+	}
+
+	// Stage 3d: Apply sample filter (--keep-indv) before HI and residualization
+	if (!cli.keep_indv_path.empty()) {
+		std::vector<int> keep_idx;
+		if (!compute_keep_sample_idx(cli.keep_indv_path, wm.sample_names, keep_idx))
+			return 1;
+		const int n_keep = (int)keep_idx.size();
+		if (n_keep < nsamples_diploid) {
+			auto filter_rows = [&](Eigen::MatrixXf& M) {
+				if (!cli.phased) {
+					Eigen::MatrixXf Mf(n_keep, M.cols());
+					for (int i = 0; i < n_keep; ++i) Mf.row(i) = M.row(keep_idx[i]);
+					M = std::move(Mf);
+				} else {
+					Eigen::MatrixXf Mf(2 * n_keep, M.cols());
+					for (int i = 0; i < n_keep; ++i) {
+						Mf.row(2 * i)     = M.row(2 * keep_idx[i]);
+						Mf.row(2 * i + 1) = M.row(2 * keep_idx[i] + 1);
+					}
+					M = std::move(Mf);
+				}
+			};
+			filter_rows(X);
+			filter_rows(X_full);
+			std::vector<std::string> names_f;
+			names_f.reserve(n_keep);
+			for (int i : keep_idx) names_f.push_back(wm.sample_names[i]);
+			wm.sample_names = std::move(names_f);
+			nsamples_diploid = n_keep;
+			nsamples = n_keep;
+		}
 	}
 
 	if (cli.min_callrate < 1.0) {
@@ -1093,80 +1125,6 @@ int main(int argc, char** argv) {
 	print_residualization_sanity(Z);
 	std::cout << std::flush;
 
-	// Stage 9b: Apply sample filter post-residualization
-	if (!cli.keep_indv_path.empty()) {
-		std::vector<int> keep_idx;
-		if (!compute_keep_sample_idx(cli.keep_indv_path, wm.sample_names, keep_idx))
-			return 1;
-		const int n_keep = (int)keep_idx.size();
-		if (n_keep < nsamples_diploid) {
-			const int nmarkers_z = (int)Z.cols();
-			// Filter Z (scan marker residuals)
-			if (!cli.phased) {
-				Eigen::MatrixXf Zf(n_keep, nmarkers_z);
-				for (int i = 0; i < n_keep; ++i) Zf.row(i) = Z.row(keep_idx[i]);
-				Z = std::move(Zf);
-			} else {
-				Eigen::MatrixXf Zf(2 * n_keep, nmarkers_z);
-				for (int i = 0; i < n_keep; ++i) {
-					Zf.row(2 * i)     = Z.row(2 * keep_idx[i]);
-					Zf.row(2 * i + 1) = Z.row(2 * keep_idx[i] + 1);
-				}
-				Z = std::move(Zf);
-			}
-			// Filter X (non-empty only in excl-focus mode)
-			if (X.size() > 0) {
-				if (!cli.phased) {
-					Eigen::MatrixXf Xf(n_keep, X.cols());
-					for (int i = 0; i < n_keep; ++i) Xf.row(i) = X.row(keep_idx[i]);
-					X = std::move(Xf);
-				} else {
-					Eigen::MatrixXf Xf(2 * n_keep, X.cols());
-					for (int i = 0; i < n_keep; ++i) {
-						Xf.row(2 * i)     = X.row(2 * keep_idx[i]);
-						Xf.row(2 * i + 1) = X.row(2 * keep_idx[i] + 1);
-					}
-					X = std::move(Xf);
-				}
-			}
-			// Filter hc_full per-sample vectors (weighted LOCO components)
-			if (has_hc_full && !use_ref_freq) {
-				auto filter_vec = [&](Eigen::VectorXf& v) {
-					Eigen::VectorXf vf(n_keep);
-					for (int i = 0; i < n_keep; ++i) vf(i) = v(keep_idx[i]);
-					v = std::move(vf);
-				};
-				filter_vec(hc_full.wsum_total);
-				filter_vec(hc_full.wtot_total);
-				for (auto& v : hc_full.wsum_chr) filter_vec(v);
-				for (auto& v : hc_full.wtot_chr) filter_vec(v);
-			}
-			// Filter hc_freq_full per-sample vectors (freq-based LOCO components)
-			if (has_hc_full && use_ref_freq) {
-				auto filter_vec = [&](Eigen::VectorXf& v) {
-					Eigen::VectorXf vf(n_keep);
-					for (int i = 0; i < n_keep; ++i) vf(i) = v(keep_idx[i]);
-					v = std::move(vf);
-				};
-				filter_vec(hc_freq_full.num_total);
-				filter_vec(hc_freq_full.den_total);
-				for (auto& v : hc_freq_full.num_chr) filter_vec(v);
-				for (auto& v : hc_freq_full.den_chr) filter_vec(v);
-			}
-			// Filter sample-haplo vector and its residualized form
-			if (g_loaded) {
-				Eigen::VectorXf gf(n_keep);
-				for (int i = 0; i < n_keep; ++i) gf(i) = g(keep_idx[i]);
-				g = std::move(gf);
-			}
-			if (gZ.size() > 0) {
-				Eigen::VectorXf gZf(n_keep);
-				for (int i = 0; i < n_keep; ++i) gZf(i) = gZ(keep_idx[i]);
-				gZ = std::move(gZf);
-			}
-		}
-	}
-
 	// Stage 10: Scan options for permutations (symmetric only)
 	ScanOptions popt;
 	popt.intra = cli.intra;
@@ -1222,7 +1180,7 @@ int main(int argc, char** argv) {
 				return 1;
 		}
 
-		std::string perm_path = cli.out + ".samplegeno.perm.summary.tsv";
+		std::string perm_path = cli.out + ".samplehaplo.perm.summary.tsv";
 		write_perm_summary_tsv(perm_path, summ);
 		std::cout << "  wrote permutation summaries: " << perm_path << "\n";
 		return 0;
@@ -1299,12 +1257,12 @@ int main(int argc, char** argv) {
 	opt.min_neg_r = min_neg_r;
 	opt.min_pos_r = min_pos_r;
 
-	// Stage 11a: Sample-geno scan overrides marker/marker scan
+	// Stage 11a: Sample-haplo scan overrides marker/marker scan
 	if (sample_haplo_mode) {
-		std::string out_path = cli.out + ".samplegeno.hits.tsv";
+		std::string out_path = cli.out + ".samplehaplo.hits.tsv";
 		std::string distrib_path;
 		if (cli.distrib)
-			distrib_path = cli.out + ".samplegeno.scan.summary.tsv";
+			distrib_path = cli.out + ".samplehaplo.scan.summary.tsv";
 
 		long long tested = 0;
 		long long kept = 0;
@@ -1354,7 +1312,7 @@ int main(int argc, char** argv) {
 				return 1;
 		}
 
-		std::cout << "Sample-geno scan complete:\n";
+		std::cout << "Sample-haplo scan complete:\n";
 		std::cout << "  tested_pairs = " << tested << "\n";
 		std::cout << "  kept_pairs   = " << kept << "\n";
 		std::cout << "  wrote        = " << out_path << "\n";

@@ -1041,7 +1041,7 @@ bool scan_vector_vs_windows_write_hits(
 			consider_distrib(r);
 
 			if (keep_hit(r)) {
-				of << "sample_geno"
+				of << "sample_haplo"
 					<< "\t" << w
 					<< "\t" << chroms[w]
 					<< "\t" << pos[w]
@@ -1165,7 +1165,7 @@ bool permute_sample_vector_summary(
 		omp_set_num_threads(nthreads);
 	#endif
 
-	std::cout << "Permutation test (sample-geno; full shuffle): " << n_perm << " replicates";
+	std::cout << "Permutation test (sample-haplo; full shuffle): " << n_perm << " replicates";
 	#ifdef ADMIXLD_HAS_OPENMP
 		std::cout << " using " << nthreads << " threads";
 	#endif
