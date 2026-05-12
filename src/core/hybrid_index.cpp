@@ -345,15 +345,6 @@ Eigen::VectorXf compute_hi_freq(
 ) {
 	const int nwin = (int)X.cols();
 
-	std::vector<float> wlen;
-	if ((int)chroms.size() == nwin && (int)pos.size() == nwin) {
-		wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
-			? compute_tract_lengths_from_range_msp(pos_start, pos)
-			: infer_tract_lengths(chroms, pos, pos_is_start);
-	} else {
-		wlen.assign((size_t)nwin, 1.0f);
-	}
-
 	if (phased) {
 		Eigen::VectorXf h(nsamples_diploid);
 		for (int i = 0; i < nsamples_diploid; ++i) {
@@ -365,10 +356,9 @@ Eigen::VectorXf compute_hi_freq(
 				float v1 = X(2 * i + 1, w);
 				if (std::isnan(v0) || std::isnan(v1)) continue;
 				double delta = (double)mf.p1 - (double)mf.p2;
-				double L = (double)wlen[(size_t)w];
 				double d_half = ((double)v0 + (double)v1) / 2.0;
-				num += (d_half - (double)mf.p2) * delta * L;
-				den += delta * delta * L;
+				num += (d_half - (double)mf.p2) * delta;
+				den += delta * delta;
 			}
 			h(i) = (den > 0.0) ? (float)(num / den)
 				: std::numeric_limits<float>::quiet_NaN();
@@ -387,9 +377,8 @@ Eigen::VectorXf compute_hi_freq(
 			float v = X(i, w);
 			if (std::isnan(v)) continue;
 			double delta = (double)mf.p1 - (double)mf.p2;
-			double L = (double)wlen[(size_t)w];
-			num += ((double)v / 2.0 - (double)mf.p2) * delta * L;
-			den += delta * delta * L;
+			num += ((double)v / 2.0 - (double)mf.p2) * delta;
+			den += delta * delta;
 		}
 		h(i) = (den > 0.0) ? (float)(num / den)
 			: std::numeric_limits<float>::quiet_NaN();
@@ -435,14 +424,6 @@ HiComponentsFreq build_hi_components_freq(
 		hc.den_chr[(size_t)c] = Eigen::VectorXf::Zero(nsamples);
 	}
 
-	// Tract lengths
-	std::vector<float> wlen((size_t)nwin, 1.0f);
-	if ((int)chroms.size() == nwin && (int)pos.size() == nwin) {
-		wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
-			? compute_tract_lengths_from_range_msp(pos_start, pos)
-			: infer_tract_lengths(chroms, pos, pos_is_start);
-	}
-
 	for (int w = 0; w < nwin; ++w) {
 		if (w >= (int)chroms.size()) continue;
 		if (w >= (int)freqs.size()) continue;
@@ -455,20 +436,18 @@ HiComponentsFreq build_hi_components_freq(
 		if (it == chr_to_idx.end()) continue;
 
 		const int cidx = it->second;
-		const float Lf = (w < (int)wlen.size()) ? wlen[(size_t)w] : 1.0f;
-		const float L = (Lf >= 1.0f) ? Lf : 1.0f;
 		const double delta = (double)mf.p1 - (double)mf.p2;
-		const double delta2_L = delta * delta * (double)L;
+		const double delta2 = delta * delta;
 
 		for (int i = 0; i < nsamples; ++i) {
 			const float v = X(i, w);
 			if (std::isnan(v)) continue;
 
-			const double contrib_num = ((double)v / 2.0 - (double)mf.p2) * delta * (double)L;
+			const double contrib_num = ((double)v / 2.0 - (double)mf.p2) * delta;
 			hc.num_total(i) += (float)contrib_num;
-			hc.den_total(i) += (float)delta2_L;
+			hc.den_total(i) += (float)delta2;
 			hc.num_chr[(size_t)cidx](i) += (float)contrib_num;
-			hc.den_chr[(size_t)cidx](i) += (float)delta2_L;
+			hc.den_chr[(size_t)cidx](i) += (float)delta2;
 		}
 	}
 

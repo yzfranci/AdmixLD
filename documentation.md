@@ -352,15 +352,15 @@ Markers absent from the `--ref-freq` file or with |δ| < `--min-delta-afd` are d
 
 **Formula**
 
-$$\text{HI}_i = \frac{\displaystyle\sum_j \left(\frac{d_{ij}}{2} - p_{2j}\right) \delta_j \, L_j}{\displaystyle\sum_j \delta_j^2 \, L_j}$$
+$$\text{HI}_i = \frac{\displaystyle\sum_j \left(\frac{d_{ij}}{2} - p_{2j}\right) \delta_j}{\displaystyle\sum_j \delta_j^2}$$
 
-where $\delta_j = p_{1j} - p_{2j}$ is the allele frequency difference and $L_j$ is the inferred segment length (same length inference as weighted HI). The estimator is equivalent to projecting the mean-centred dosage onto the δ axis and weighting by the informativeness (δ²) of each marker, yielding a value in [0, 1] for pure-ancestry individuals.
+where $\delta_j = p_{1j} - p_{2j}$ is the allele frequency difference. The estimator projects the mean-centred dosage onto the δ axis and weights each SNP by its informativeness (δ²), yielding a value in [0, 1] for pure-ancestry individuals. Each SNP contributes equally regardless of its genomic position; no segment-length weighting is applied.
 
 **LOCO with `--ref-freq`**
 
 When `--hi-mode excl-focus` is used together with `--ref-freq`, per-chromosome numerator and denominator components are accumulated separately, so the LOCO HI for chromosome $c$ can be computed without re-scanning all markers:
 
-$$\text{HI}^{-c}_i = \frac{\text{num\_total}_i - \text{num}_{c,i}}{\text{den\_total}_i - \text{den}_{c,i}}$$
+$$\text{HI}^{-c}_i = \frac{\displaystyle\sum_{j \notin c} \left(\frac{d_{ij}}{2} - p_{2j}\right) \delta_j}{\displaystyle\sum_{j \notin c} \delta_j^2}$$
 
 ### Residualization
 
@@ -428,7 +428,7 @@ When `--min-callrate <value>` is set to a value less than 1.0:
 2. Remaining missing genotypes within retained markers are **mean-imputed** using the per-marker mean dosage.
 3. Residualization and scanning proceed on the imputed matrix.
 
-Mean imputation is applied only when explicitly requested. This option is intended primarily for reduced-representation datasets (e.g., RADseq) where missing data are common and a strict complete-data requirement would exclude most markers. Note that mean imputation can attenuate correlation estimates.
+Mean imputation is applied only when explicitly requested. This option is intended primarily for reduced-representation datasets (e.g., RADseq) where a strict complete-data requirement would exclude most markers. Note that mean imputation can attenuate correlation estimates.
 
 ---
 
