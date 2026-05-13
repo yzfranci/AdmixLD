@@ -2,9 +2,9 @@
 
 ## Overview
 
-AdmixLD is a command-line tool for detecting **ancestry disequilibrium (AD)** in hybrid zones and admixed populations. It scans for pairwise correlations between residualized ancestry markers — correlations that remain after controlling for the genome-wide hybrid index (ancestry proportion). Strong signals can indicate selection for conspecific loci (positive r values) or heterospecific loci (negative r values).
+AdmixLD is a command-line tool for detecting **excess ancestry linkage disequilibrium** in hybrid zones and admixed populations. It scans for pairwise correlations between residualized ancestry markers — correlations that remain after controlling for the genome-wide hybrid index (ancestry proportion). Strong signals can indicate selection for conspecific loci (positive r values) or heterospecific loci (negative r values).
 
-**Core idea**: Each marker's dosage is residualized on the genome-wide hybrid index (HI), controlling for linkage disequilibrium due to admixture alone. Pearson correlations between residualized markers are then computed across the genome (interchromosomal by default, intrachromosomal with `--intra`).
+**Core idea**: Each marker's dosage is residualized on the genome-wide hybrid index (HI), controlling for linkage disequilibrium (LD) due to admixture alone. Pearson correlations between residualized markers are then computed across the genome (interchromosomal by default, intrachromosomal with `--intra`).
 
 ---
 
@@ -196,21 +196,6 @@ Written when HI is computed (always if not pre-supplied). Tab-separated.
 | `sample` | Sample name |
 | `hi`     | Hybrid index (ancestry proportion, in [0, 1]) |
 
-### Permutation Summary — `<prefix>.perm.summary.tsv`
-
-Written when `--permute N` is used. One row per permutation replicate.
-
-| Column      | Description |
-|-------------|-------------|
-| `rep`       | Replicate index |
-| `max_r`     | Maximum correlation in replicate |
-| `min_r`     | Minimum correlation in replicate |
-| `p99`..`p01`| Percentiles of correlation distribution |
-| `mean`      | Mean correlation |
-| `sd`        | Standard deviation of correlations |
-| `mean_r2`   | Mean of r² values |
-| `sd_r2`     | SD of r² values |
-
 ### Scan Distribution Summary — `<prefix>.scan.summary.tsv`
 
 Written when `--distrib` is used. Single row summarising the empirical distribution of all tested pairs.
@@ -222,6 +207,20 @@ Written when `--distrib` is used. Single row summarising the empirical distribut
 | Percentiles    | `p99`, `p95`, `p75`, `median`, `p25`, `p05`, `p01` |
 | `mean`, `sd`   | Mean and SD |
 | `mean_r2`, `sd_r2` | R² statistics |
+
+### Reservoir Sample — `<prefix>.scan.summary.reservoir.tsv`
+
+Written when `--distrib-raw` is used (implies `--distrib`). Single-column TSV containing a random reservoir sample of up to `--distrib-sample` r values drawn from all tested pairs. The header is `r`.
+
+```
+r
+-0.0123
+0.0451
+-0.0387
+...
+```
+
+This file is intended for empirical null calibration.
 
 ---
 
@@ -292,22 +291,14 @@ Typically used to provide a mitochondrial haplotype that would not be contained 
 |------|-------------|
 | `--sample-haplo FILE` | Per-sample mitochondrial haplotype TSV (0 or 1 only); correlates against all markers |
 
-### Permutation Testing
-
-Estimates the genome-wide null distribution of r by repeatedly shuffling sample labels and re-scanning. Can be used to choose a r value threshold for outliers.
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--permute N` | 0 | Run N full-shuffle permutation replicates |
-| `--permute-sample INT` | 200000 | Reservoir sample size for percentile estimation |
-| `--seed INT` | 1 | RNG seed |
-
 ### Distribution Summary
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--distrib` | off | Write empirical scan distribution summary |
+| `--distrib` | off | Write empirical scan distribution summary to `<prefix>.scan.summary.tsv` |
+| `--distrib-raw` | off | Also write raw reservoir sample to `<prefix>.scan.summary.reservoir.tsv` (implies `--distrib`) |
 | `--distrib-sample INT` | 200000 | Reservoir sample size |
+| `--seed INT` | 1 | RNG seed for reservoir subsampling |
 
 ### Performance
 
@@ -393,19 +384,6 @@ $$r_{AB} = \frac{1}{n-1} \sum_i Z_{Ai} \cdot Z_{Bi}$$
 
 Matrix multiplication is tiled (default tile size 1024) for cache efficiency with large marker sets.
 
-### Permutation Testing
-
-Genome-wide significance thresholds are estimated by full-shuffle permutation:
-
-1. Residualize all markers on HI to produce the z-scored residual matrix Z (computed once)
-2. Draw a single random permutation of sample indices per replicate; for every interchromosomal pair (A, B), apply it to the markers of A while leaving B in natural sample order — the same permutation is reused across all pairs within a replicate
-3. Scan all interchromosomal pairs on the permuted Z and record the distribution of r values
-4. Repeat N times (`--permute N`)
-
-A reservoir sampler with configurable capacity (`--permute-sample`) tracks the distribution without storing all correlations.
-
-The distribution as well as the min and max r values can be used to choose a r value threshold for outliers.
-
 ### LOCO Mode (`--hi-mode excl-focus`)
 
 In leave-one-chromosome-out (LOCO) mode, the HI used to residualize markers on chromosome $c$ excludes that chromosome's contribution:
@@ -439,10 +417,10 @@ Mean imputation is applied only when explicitly requested. This option is intend
 - **Frequency-based HI (`--ref-freq`)**: This mode is recommended when markers are individual SNPs rather than ancestry tracts, since the δ²-weighting emphasises informative diagnostic markers. It requires a parental allele frequency file and is only compatible with `--vcf`.
 - **Allele polarization**: Polarization is applied internally before HI computation and residualization. The dosage values stored in memory and used throughout the analysis reflect the polarized allele. The input VCF is not modified.
 - **`--ref-freq` and `--msp`**: `--ref-freq` is silently ignored when `--msp` is provided. MSP dosages are already coded as ancestry counts and do not require frequency-based polarization.
-- **LOCO and permutations**: When using `--hi-mode excl-focus` with `--permute`, HI components are re-used across permutations for efficiency; only the mapping of HI to shuffled samples changes.
 - **`--msp` vs `--vcf`**: MSP input provides explicit tract start/end positions, so segment lengths for weighted HI are exact. VCF input infers lengths from consecutive marker positions (affected by `--pos-is-start`).
 - **`--cov` and LOCO**: `--cov` is incompatible with `--hi-mode excl-focus`. LOCO requires per-chromosome HI components derived from the marker data itself and cannot be computed for externally supplied covariates.
 - **`--cov` format**: `--cov` now accepts exactly one value column (`sample<TAB>hi`). Files with multiple numeric columns are rejected with an error.
 - **Plug-in residualization**: AdmixLD uses a model-based plug-in formula (expected dosage = $2 h_i$ or $2(p_{2w} + \delta_w h_i)$) rather than OLS regression. This eliminates per-marker slope estimation and is more robust when sample sizes are small or markers are not perfectly ancestry-informative.
 - **`--sample-haplo` values**: Non-missing values must be exactly 0 or 1. Any other value (including 0.5) is rejected at load time. Use missing-value tokens (`.`, `NA`) for samples without haplotype data.
-- **`--keep-indv` and residualization**: The sample filter is applied **after** residualization. HI estimation, LOCO component building, and OLS residualization all use the full sample set to avoid biasing covariate estimation with a non-representative subset. Only the correlation scan (and permutations) use the filtered subset.
+- **`--keep-indv` and residualization**: The sample filter is applied **after** residualization. HI estimation, LOCO component building, and residualization all use the full sample set to avoid biasing covariate estimation with a non-representative subset. Only the correlation scan uses the filtered subset.
+- **`--distrib-raw` and null calibration**: The reservoir sample is collected using reservoir sampling, so it is an unbiased random sample of all tested r values. When both `--distrib` and `--distrib-raw` are used, the summary quantiles and the raw sample are derived from the same reservoir.

@@ -5,7 +5,6 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
-#include <random>
 
 struct ScanOptions {
 	bool intra = false;
@@ -58,36 +57,10 @@ bool scan_markers_write_hits(
 	long long& kept_pairs,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
-struct PermSummary {
-	float min_r = 0.0f;
-	float p01 = 0.0f;
-	float p05 = 0.0f;
-	float p25 = 0.0f;
-	float median = 0.0f;
-	float p75 = 0.0f;
-	float p95 = 0.0f;
-	float p99 = 0.0f;
-	float max_r = 0.0f;
-	float mean = 0.0f;
-	float sd = 0.0f;
-	float mean_r2 = 0.0f;
-	float sd_r2 = 0.0f;
-};
-
-
-bool permute_interchrom_summary_chrmarker(
-	const Eigen::MatrixXf& Z,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
-	const std::vector<std::string>& chr_order,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	std::vector<PermSummary>& summaries_out
-);
 
 bool scan_target_write_hits(
 	const Eigen::MatrixXf& Z,
@@ -102,7 +75,8 @@ bool scan_target_write_hits(
 	long long& kept_pairs,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
 bool scan_vector_vs_windows_write_hits(
@@ -118,17 +92,7 @@ bool scan_vector_vs_windows_write_hits(
 	long long& kept_pairs,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
-bool permute_sample_vector_summary(
-	const Eigen::MatrixXf& Z,
-	const Eigen::VectorXf& gZ,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
-	const std::vector<std::string>& chr_order,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	std::vector<PermSummary>& summaries_out
-);

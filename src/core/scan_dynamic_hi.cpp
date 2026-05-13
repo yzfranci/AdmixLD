@@ -155,6 +155,7 @@ static bool scan_markers_write_hits_excl_focus_T(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
+	const std::string& reservoir_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	const int nsamples = opt.nsamples;
@@ -163,7 +164,7 @@ static bool scan_markers_write_hits_excl_focus_T(
 	tested_pairs = 0;
 	kept_pairs = 0;
 
-	const bool do_distrib = (!distrib_path.empty());
+	const bool do_distrib = (!distrib_path.empty() || !reservoir_path.empty());
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
@@ -430,69 +431,86 @@ static bool scan_markers_write_hits_excl_focus_T(
 			dsample.insert(dsample.end(), d.sample.begin(), d.sample.end());
 		}
 
-		std::ofstream df(distrib_path);
-		if (!df) {
-			std::cerr << "Error: cannot write to " << distrib_path << "\n";
-			return false;
+		if (!distrib_path.empty()) {
+			std::ofstream df(distrib_path);
+			if (!df) {
+				std::cerr << "Error: cannot write to " << distrib_path << "\n";
+				return false;
+			}
+
+			df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
+
+			if (total_tested == 0 || dsample.empty()) {
+				df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			} else {
+				if ((int)dsample.size() > distrib_sample) {
+					std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+					std::shuffle(dsample.begin(), dsample.end(), rng);
+					dsample.resize((size_t)distrib_sample);
+				}
+
+				float mean = std::numeric_limits<float>::quiet_NaN();
+				float sd = std::numeric_limits<float>::quiet_NaN();
+				compute_mean_sd_from_sample(dsample, mean, sd);
+
+				float mean_r2 = std::numeric_limits<float>::quiet_NaN();
+				float sd_r2 = std::numeric_limits<float>::quiet_NaN();
+				{
+					double mu2 = 0.0, m2 = 0.0;
+					long long n2 = 0;
+					for (float x : dsample) {
+						if (!std::isfinite(x)) continue;
+						++n2;
+						double r2 = (double)x * (double)x;
+						double dr2 = r2 - mu2;
+						mu2 += dr2 / (double)n2;
+						m2 += dr2 * (r2 - mu2);
+					}
+					if (n2 > 0) mean_r2 = (float)mu2;
+					if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
+				}
+
+				std::sort(dsample.begin(), dsample.end());
+
+				float p01 = quantile_from_sorted(dsample, 0.01);
+				float p05 = quantile_from_sorted(dsample, 0.05);
+				float p25 = quantile_from_sorted(dsample, 0.25);
+				float med = quantile_from_sorted(dsample, 0.50);
+				float p75 = quantile_from_sorted(dsample, 0.75);
+				float p95 = quantile_from_sorted(dsample, 0.95);
+				float p99 = quantile_from_sorted(dsample, 0.99);
+
+				df << total_tested
+					<< "\t" << global_max
+					<< "\t" << p99
+					<< "\t" << p95
+					<< "\t" << p75
+					<< "\t" << med
+					<< "\t" << p25
+					<< "\t" << p05
+					<< "\t" << p01
+					<< "\t" << global_min
+					<< "\t" << mean
+					<< "\t" << sd
+					<< "\t" << mean_r2
+					<< "\t" << sd_r2
+					<< "\n";
+			}
+		} else if (!dsample.empty() && (int)dsample.size() > distrib_sample) {
+			std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+			std::shuffle(dsample.begin(), dsample.end(), rng);
+			dsample.resize((size_t)distrib_sample);
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
-
-		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
-		} else {
-			if ((int)dsample.size() > distrib_sample) {
-				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
-				std::shuffle(dsample.begin(), dsample.end(), rng);
-				dsample.resize((size_t)distrib_sample);
+		if (!reservoir_path.empty() && !dsample.empty()) {
+			std::ofstream rf(reservoir_path);
+			if (!rf) {
+				std::cerr << "Error: cannot write reservoir to " << reservoir_path << "\n";
+				return false;
 			}
-
-			float mean = std::numeric_limits<float>::quiet_NaN();
-			float sd = std::numeric_limits<float>::quiet_NaN();
-			compute_mean_sd_from_sample(dsample, mean, sd);
-
-			float mean_r2 = std::numeric_limits<float>::quiet_NaN();
-			float sd_r2 = std::numeric_limits<float>::quiet_NaN();
-			{
-				double mu2 = 0.0, m2 = 0.0;
-				long long n2 = 0;
-				for (float x : dsample) {
-					if (!std::isfinite(x)) continue;
-					++n2;
-					double r2 = (double)x * (double)x;
-					double dr2 = r2 - mu2;
-					mu2 += dr2 / (double)n2;
-					m2 += dr2 * (r2 - mu2);
-				}
-				if (n2 > 0) mean_r2 = (float)mu2;
-				if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
-			}
-
-			std::sort(dsample.begin(), dsample.end());
-
-			float p01 = quantile_from_sorted(dsample, 0.01);
-			float p05 = quantile_from_sorted(dsample, 0.05);
-			float p25 = quantile_from_sorted(dsample, 0.25);
-			float med = quantile_from_sorted(dsample, 0.50);
-			float p75 = quantile_from_sorted(dsample, 0.75);
-			float p95 = quantile_from_sorted(dsample, 0.95);
-			float p99 = quantile_from_sorted(dsample, 0.99);
-
-			df << total_tested
-				<< "\t" << global_max
-				<< "\t" << p99
-				<< "\t" << p95
-				<< "\t" << p75
-				<< "\t" << med
-				<< "\t" << p25
-				<< "\t" << p05
-				<< "\t" << p01
-				<< "\t" << global_min
-				<< "\t" << mean
-				<< "\t" << sd
-				<< "\t" << mean_r2
-				<< "\t" << sd_r2
-				<< "\n";
+			rf << "r\n";
+			for (float x : dsample)
+				rf << x << "\n";
 		}
 	}
 
@@ -512,7 +530,8 @@ bool scan_markers_write_hits_excl_focus(
 	long long& kept_pairs,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::string& reservoir_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -520,7 +539,7 @@ bool scan_markers_write_hits_excl_focus(
 	return scan_markers_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed
+		distrib_path, distrib_sample, distrib_seed, reservoir_path
 	);
 }
 
@@ -538,7 +557,8 @@ bool scan_markers_write_hits_excl_focus(
 	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::string& reservoir_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -546,7 +566,7 @@ bool scan_markers_write_hits_excl_focus(
 	return scan_markers_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
 	);
 }
 
@@ -567,9 +587,10 @@ static bool scan_target_write_hits_excl_focus_T(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
+	const std::string& reservoir_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
-	const bool do_distrib = (!distrib_path.empty());
+	const bool do_distrib = (!distrib_path.empty() || !reservoir_path.empty());
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
@@ -801,14 +822,6 @@ static bool scan_target_write_hits_excl_focus_T(
 		std::remove(part_paths[(size_t)t].c_str());
 
 	if (do_distrib) {
-		std::ofstream df(distrib_path);
-		if (!df) {
-			std::cerr << "Error: cannot write to " << distrib_path << "\n";
-			return false;
-		}
-
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
-
 		long long total_tested = 0;
 		float global_min = std::numeric_limits<float>::infinity();
 		float global_max = -std::numeric_limits<float>::infinity();
@@ -828,61 +841,86 @@ static bool scan_target_write_hits_excl_focus_T(
 			dsample.insert(dsample.end(), d.sample.begin(), d.sample.end());
 		}
 
-		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
-		} else {
-			if ((int)dsample.size() > distrib_sample) {
-				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
-				std::shuffle(dsample.begin(), dsample.end(), rng);
-				dsample.resize((size_t)distrib_sample);
+		if (!distrib_path.empty()) {
+			std::ofstream df(distrib_path);
+			if (!df) {
+				std::cerr << "Error: cannot write to " << distrib_path << "\n";
+				return false;
 			}
 
-			float mean = std::numeric_limits<float>::quiet_NaN();
-			float sd = std::numeric_limits<float>::quiet_NaN();
-			compute_mean_sd_from_sample(dsample, mean, sd);
+			df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
 
-			float mean_r2 = std::numeric_limits<float>::quiet_NaN();
-			float sd_r2 = std::numeric_limits<float>::quiet_NaN();
-			{
-				double mu2 = 0.0, m2 = 0.0;
-				long long n2 = 0;
-				for (float x : dsample) {
-					if (!std::isfinite(x)) continue;
-					++n2;
-					double r2 = (double)x * (double)x;
-					double dr2 = r2 - mu2;
-					mu2 += dr2 / (double)n2;
-					m2 += dr2 * (r2 - mu2);
+			if (total_tested == 0 || dsample.empty()) {
+				df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			} else {
+				if ((int)dsample.size() > distrib_sample) {
+					std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+					std::shuffle(dsample.begin(), dsample.end(), rng);
+					dsample.resize((size_t)distrib_sample);
 				}
-				if (n2 > 0) mean_r2 = (float)mu2;
-				if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
+
+				float mean = std::numeric_limits<float>::quiet_NaN();
+				float sd = std::numeric_limits<float>::quiet_NaN();
+				compute_mean_sd_from_sample(dsample, mean, sd);
+
+				float mean_r2 = std::numeric_limits<float>::quiet_NaN();
+				float sd_r2 = std::numeric_limits<float>::quiet_NaN();
+				{
+					double mu2 = 0.0, m2 = 0.0;
+					long long n2 = 0;
+					for (float x : dsample) {
+						if (!std::isfinite(x)) continue;
+						++n2;
+						double r2 = (double)x * (double)x;
+						double dr2 = r2 - mu2;
+						mu2 += dr2 / (double)n2;
+						m2 += dr2 * (r2 - mu2);
+					}
+					if (n2 > 0) mean_r2 = (float)mu2;
+					if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
+				}
+
+				std::sort(dsample.begin(), dsample.end());
+
+				float p01 = quantile_from_sorted(dsample, 0.01);
+				float p05 = quantile_from_sorted(dsample, 0.05);
+				float p25 = quantile_from_sorted(dsample, 0.25);
+				float med = quantile_from_sorted(dsample, 0.50);
+				float p75 = quantile_from_sorted(dsample, 0.75);
+				float p95 = quantile_from_sorted(dsample, 0.95);
+				float p99 = quantile_from_sorted(dsample, 0.99);
+
+				df << total_tested
+					<< "\t" << global_max
+					<< "\t" << p99
+					<< "\t" << p95
+					<< "\t" << p75
+					<< "\t" << med
+					<< "\t" << p25
+					<< "\t" << p05
+					<< "\t" << p01
+					<< "\t" << global_min
+					<< "\t" << mean
+					<< "\t" << sd
+					<< "\t" << mean_r2
+					<< "\t" << sd_r2
+					<< "\n";
 			}
+		} else if (!dsample.empty() && (int)dsample.size() > distrib_sample) {
+			std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+			std::shuffle(dsample.begin(), dsample.end(), rng);
+			dsample.resize((size_t)distrib_sample);
+		}
 
-			std::sort(dsample.begin(), dsample.end());
-
-			float p01 = quantile_from_sorted(dsample, 0.01);
-			float p05 = quantile_from_sorted(dsample, 0.05);
-			float p25 = quantile_from_sorted(dsample, 0.25);
-			float med = quantile_from_sorted(dsample, 0.50);
-			float p75 = quantile_from_sorted(dsample, 0.75);
-			float p95 = quantile_from_sorted(dsample, 0.95);
-			float p99 = quantile_from_sorted(dsample, 0.99);
-
-			df << total_tested
-				<< "\t" << global_max
-				<< "\t" << p99
-				<< "\t" << p95
-				<< "\t" << p75
-				<< "\t" << med
-				<< "\t" << p25
-				<< "\t" << p05
-				<< "\t" << p01
-				<< "\t" << global_min
-				<< "\t" << mean
-				<< "\t" << sd
-				<< "\t" << mean_r2
-				<< "\t" << sd_r2
-				<< "\n";
+		if (!reservoir_path.empty() && !dsample.empty()) {
+			std::ofstream rf(reservoir_path);
+			if (!rf) {
+				std::cerr << "Error: cannot write reservoir to " << reservoir_path << "\n";
+				return false;
+			}
+			rf << "r\n";
+			for (float x : dsample)
+				rf << x << "\n";
 		}
 	}
 
@@ -903,7 +941,8 @@ bool scan_target_write_hits_excl_focus(
 	long long& kept_pairs,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::string& reservoir_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -911,7 +950,7 @@ bool scan_target_write_hits_excl_focus(
 	return scan_target_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, target_w, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed
+		distrib_path, distrib_sample, distrib_seed, reservoir_path
 	);
 }
 
@@ -930,7 +969,8 @@ bool scan_target_write_hits_excl_focus(
 	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::string& reservoir_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -938,7 +978,7 @@ bool scan_target_write_hits_excl_focus(
 	return scan_target_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, target_w, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
 	);
 }
 
@@ -959,6 +999,7 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
+	const std::string& reservoir_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	if (distrib_sample <= 0)
@@ -973,7 +1014,7 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 	tested_pairs = 0;
 	kept_pairs = 0;
 
-	const bool do_distrib = (!distrib_path.empty());
+	const bool do_distrib = (!distrib_path.empty() || !reservoir_path.empty());
 	const float denom = 1.0f / (float)(nsamples - 1);
 
 	int nthreads = 1;
@@ -1139,69 +1180,86 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 			dsample.insert(dsample.end(), d.sample.begin(), d.sample.end());
 		}
 
-		std::ofstream df(distrib_path);
-		if (!df) {
-			std::cerr << "Error: cannot write distrib summary to " << distrib_path << "\n";
-			return false;
+		if (!distrib_path.empty()) {
+			std::ofstream df(distrib_path);
+			if (!df) {
+				std::cerr << "Error: cannot write distrib summary to " << distrib_path << "\n";
+				return false;
+			}
+
+			df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
+
+			if (total_tested == 0 || dsample.empty()) {
+				df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+			} else {
+				if ((int)dsample.size() > distrib_sample) {
+					std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+					std::shuffle(dsample.begin(), dsample.end(), rng);
+					dsample.resize((size_t)distrib_sample);
+				}
+
+				float mean = std::numeric_limits<float>::quiet_NaN();
+				float sd = std::numeric_limits<float>::quiet_NaN();
+				compute_mean_sd_from_sample(dsample, mean, sd);
+
+				float mean_r2 = std::numeric_limits<float>::quiet_NaN();
+				float sd_r2 = std::numeric_limits<float>::quiet_NaN();
+				{
+					double mu2 = 0.0, m2 = 0.0;
+					long long n2 = 0;
+					for (float x : dsample) {
+						if (!std::isfinite(x)) continue;
+						++n2;
+						double r2 = (double)x * (double)x;
+						double dr2 = r2 - mu2;
+						mu2 += dr2 / (double)n2;
+						m2 += dr2 * (r2 - mu2);
+					}
+					if (n2 > 0) mean_r2 = (float)mu2;
+					if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
+				}
+
+				std::sort(dsample.begin(), dsample.end());
+
+				float p01 = quantile_from_sorted(dsample, 0.01);
+				float p05 = quantile_from_sorted(dsample, 0.05);
+				float p25 = quantile_from_sorted(dsample, 0.25);
+				float med = quantile_from_sorted(dsample, 0.50);
+				float p75 = quantile_from_sorted(dsample, 0.75);
+				float p95 = quantile_from_sorted(dsample, 0.95);
+				float p99 = quantile_from_sorted(dsample, 0.99);
+
+				df << total_tested
+					<< "\t" << global_max
+					<< "\t" << p99
+					<< "\t" << p95
+					<< "\t" << p75
+					<< "\t" << med
+					<< "\t" << p25
+					<< "\t" << p05
+					<< "\t" << p01
+					<< "\t" << global_min
+					<< "\t" << mean
+					<< "\t" << sd
+					<< "\t" << mean_r2
+					<< "\t" << sd_r2
+					<< "\n";
+			}
+		} else if (!dsample.empty() && (int)dsample.size() > distrib_sample) {
+			std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
+			std::shuffle(dsample.begin(), dsample.end(), rng);
+			dsample.resize((size_t)distrib_sample);
 		}
 
-		df << "tested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
-
-		if (total_tested == 0 || dsample.empty()) {
-			df << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
-		} else {
-			if ((int)dsample.size() > distrib_sample) {
-				std::mt19937_64 rng(distrib_seed ^ 0x9e3779b97f4a7c15ULL);
-				std::shuffle(dsample.begin(), dsample.end(), rng);
-				dsample.resize((size_t)distrib_sample);
+		if (!reservoir_path.empty() && !dsample.empty()) {
+			std::ofstream rf(reservoir_path);
+			if (!rf) {
+				std::cerr << "Error: cannot write reservoir to " << reservoir_path << "\n";
+				return false;
 			}
-
-			float mean = std::numeric_limits<float>::quiet_NaN();
-			float sd = std::numeric_limits<float>::quiet_NaN();
-			compute_mean_sd_from_sample(dsample, mean, sd);
-
-			float mean_r2 = std::numeric_limits<float>::quiet_NaN();
-			float sd_r2 = std::numeric_limits<float>::quiet_NaN();
-			{
-				double mu2 = 0.0, m2 = 0.0;
-				long long n2 = 0;
-				for (float x : dsample) {
-					if (!std::isfinite(x)) continue;
-					++n2;
-					double r2 = (double)x * (double)x;
-					double dr2 = r2 - mu2;
-					mu2 += dr2 / (double)n2;
-					m2 += dr2 * (r2 - mu2);
-				}
-				if (n2 > 0) mean_r2 = (float)mu2;
-				if (n2 > 1) sd_r2 = (float)std::sqrt(m2 / (double)(n2 - 1));
-			}
-
-			std::sort(dsample.begin(), dsample.end());
-
-			float p01 = quantile_from_sorted(dsample, 0.01);
-			float p05 = quantile_from_sorted(dsample, 0.05);
-			float p25 = quantile_from_sorted(dsample, 0.25);
-			float med = quantile_from_sorted(dsample, 0.50);
-			float p75 = quantile_from_sorted(dsample, 0.75);
-			float p95 = quantile_from_sorted(dsample, 0.95);
-			float p99 = quantile_from_sorted(dsample, 0.99);
-
-			df << total_tested
-				<< "\t" << global_max
-				<< "\t" << p99
-				<< "\t" << p95
-				<< "\t" << p75
-				<< "\t" << med
-				<< "\t" << p25
-				<< "\t" << p05
-				<< "\t" << p01
-				<< "\t" << global_min
-				<< "\t" << mean
-				<< "\t" << sd
-				<< "\t" << mean_r2
-				<< "\t" << sd_r2
-				<< "\n";
+			rf << "r\n";
+			for (float x : dsample)
+				rf << x << "\n";
 		}
 	}
 
@@ -1222,7 +1280,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	long long& kept_pairs,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::string& reservoir_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -1230,7 +1289,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	return scan_vector_vs_windows_write_hits_excl_focus_T(
 		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed
+		distrib_path, distrib_sample, distrib_seed, reservoir_path
 	);
 }
 
@@ -1249,7 +1308,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path,
 	int distrib_sample,
-	uint64_t distrib_seed
+	uint64_t distrib_seed,
+	const std::string& reservoir_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -1257,502 +1317,6 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	return scan_vector_vs_windows_write_hits_excl_focus_T(
 		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, &freqs_scan
-	);
-}
-
-template<typename HC, typename HiExcludeFn>
-static bool permute_interchrom_summary_chrmarker_excl_focus_T(
-	const Eigen::MatrixXf& X_scan,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HC& hc_full,
-	HiExcludeFn hi_excluding,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	std::vector<PermSummary>& summaries_out,
-	const std::vector<MarkerFreq>* freqs_scan = nullptr
-) {
-	(void)chroms_scan;
-	(void)pos_scan;
-
-	if (opt.intra) {
-		std::cerr << "Error: permutation summary is implemented for interchrom scans only.\n";
-		return false;
-	}
-	if (n_perm <= 0) {
-		summaries_out.clear();
-		return true;
-	}
-	if (sample_size <= 0)
-		sample_size = 200000;
-
-	const int nsamples = opt.nsamples;
-	const int tile_size = opt.tile_size;
-	const float denom = 1.0f / (float)(nsamples - 1);
-
-	summaries_out.clear();
-	summaries_out.resize((size_t)n_perm);
-
-	// Precompute residualized Z matrices for each chromosome pair (independent of permutation)
-	const int C = (int)chr_order_scan.size();
-
-	struct PairCache {
-		Eigen::MatrixXf Z1;
-		Eigen::MatrixXf Z2;
-		int m1 = 0;
-		int m2 = 0;
-		bool ok = false;
-	};
-
-	std::vector<PairCache> pairs;
-	pairs.reserve((size_t)C * (size_t)(C - 1) / 2);
-
-	for (int c1 = 0; c1 < C; ++c1) {
-		const auto& chr1 = chr_order_scan[c1];
-		const auto& idx1 = windows_by_chr_scan.at(chr1);
-		const int m1 = (int)idx1.size();
-
-		for (int c2 = c1 + 1; c2 < C; ++c2) {
-			const auto& chr2 = chr_order_scan[c2];
-			const auto& idx2 = windows_by_chr_scan.at(chr2);
-			const int m2 = (int)idx2.size();
-
-			PairCache pc;
-			pc.m1 = m1;
-			pc.m2 = m2;
-
-			if (m1 == 0 || m2 == 0) {
-				pairs.push_back(std::move(pc));
-				continue;
-			}
-
-			Eigen::VectorXf h = hi_excluding(hc_full, chr1, chr2);
-			int n_valid1 = 0, n_valid2 = 0;
-			pc.Z1 = residualize_and_zscore_subset(X_scan, h, idx1, n_valid1, freqs_scan);
-			pc.Z2 = residualize_and_zscore_subset(X_scan, h, idx2, n_valid2, freqs_scan);
-			pc.ok = true;
-
-			pairs.push_back(std::move(pc));
-		}
-	}
-
-	int nthreads = 1;
-	#ifdef ADMIXLD_HAS_OPENMP
-	nthreads = opt.threads;
-	if (nthreads < 1) nthreads = 1;
-	omp_set_dynamic(0);
-	omp_set_num_threads(nthreads);
-	#endif
-
-	std::cout << "Permutation test (excl-focus, interchrom; full shuffle): " << n_perm << " replicates";
-	#ifdef ADMIXLD_HAS_OPENMP
-	std::cout << " using " << nthreads << " threads";
-	#endif
-	std::cout << "\n";
-	std::cout << "  sample_size = " << sample_size << "\n";
-
-	#ifdef ADMIXLD_HAS_OPENMP
-	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
-	#endif
-	for (int rep = 0; rep < n_perm; ++rep) {
-		std::mt19937_64 rng(seed + (uint64_t)rep);
-
-		// Single random permutation applied to Z1 side; Z2 remains in natural order
-		std::vector<int> perm(nsamples);
-		for (int i = 0; i < nsamples; ++i)
-			perm[i] = i;
-		std::shuffle(perm.begin(), perm.end(), rng);
-
-		PermSummary s;
-		s.min_r = std::numeric_limits<float>::infinity();
-		s.max_r = -std::numeric_limits<float>::infinity();
-
-		std::vector<float> sample;
-		sample.reserve((size_t)sample_size);
-		long long seen = 0;
-
-		Eigen::MatrixXf A(nsamples, tile_size);
-		Eigen::MatrixXf B(nsamples, tile_size);
-		Eigen::MatrixXf R(tile_size, tile_size);
-
-		for (const auto& pc : pairs) {
-			if (!pc.ok)
-				continue;
-
-			const int m1 = pc.m1;
-			const int m2 = pc.m2;
-
-			for (int i0 = 0; i0 < m1; i0 += tile_size) {
-				const int b1 = std::min(tile_size, m1 - i0);
-
-				for (int k = 0; k < b1; ++k) {
-					for (int i = 0; i < nsamples; ++i)
-						A(i, k) = pc.Z1(perm[i], i0 + k);
-				}
-
-				for (int j0 = 0; j0 < m2; j0 += tile_size) {
-					const int b2 = std::min(tile_size, m2 - j0);
-
-					for (int k = 0; k < b2; ++k)
-						B.col(k) = pc.Z2.col(j0 + k);
-
-					R.topLeftCorner(b1, b2).noalias() = A.leftCols(b1).transpose() * B.leftCols(b2);
-					R.topLeftCorner(b1, b2) *= denom;
-
-					for (int ia = 0; ia < b1; ++ia) {
-						for (int ib = 0; ib < b2; ++ib) {
-							float r = R(ia, ib);
-							if (!std::isfinite(r))
-								continue;
-
-							if (r < s.min_r) s.min_r = r;
-							if (r > s.max_r) s.max_r = r;
-
-							++seen;
-							if ((int)sample.size() < sample_size) {
-								sample.push_back(r);
-							} else {
-								std::uniform_int_distribution<long long> U(0, seen - 1);
-								long long jj = U(rng);
-								if (jj < sample_size)
-									sample[(size_t)jj] = r;
-							}
-						}
-					}
-				}
-			}
-		}
-
-		double mu = 0.0;
-		double m2_acc = 0.0;
-		double mu_r2 = 0.0;
-		double m2_r2 = 0.0;
-		long long n = 0;
-		for (float x : sample) {
-			if (!std::isfinite(x))
-				continue;
-			++n;
-			double dx = (double)x - mu;
-			mu += dx / (double)n;
-			double dx2 = (double)x - mu;
-			m2_acc += dx * dx2;
-			double r2 = (double)x * (double)x;
-			double dr2 = r2 - mu_r2;
-			mu_r2 += dr2 / (double)n;
-			m2_r2 += dr2 * (r2 - mu_r2);
-		}
-		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
-		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
-		s.mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
-		s.sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
-
-		std::sort(sample.begin(), sample.end());
-		s.p01 = quantile_from_sorted(sample, 0.01);
-		s.p05 = quantile_from_sorted(sample, 0.05);
-		s.p25 = quantile_from_sorted(sample, 0.25);
-		s.median = quantile_from_sorted(sample, 0.50);
-		s.p75 = quantile_from_sorted(sample, 0.75);
-		s.p95 = quantile_from_sorted(sample, 0.95);
-		s.p99 = quantile_from_sorted(sample, 0.99);
-
-		summaries_out[(size_t)rep] = s;
-	}
-
-	return true;
-}
-
-bool permute_interchrom_summary_chrmarker_excl_focus(
-	const Eigen::MatrixXf& X_scan,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsWeighted& hc_full,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	std::vector<PermSummary>& summaries_out
-) {
-	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
-		return hi_from_components_weighted_excluding(hc, a, b);
-	};
-	return permute_interchrom_summary_chrmarker_excl_focus_T(
-		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
-		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out
-	);
-}
-
-bool permute_interchrom_summary_chrmarker_excl_focus(
-	const Eigen::MatrixXf& X_scan,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsFreq& hc_full,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	const std::vector<MarkerFreq>& freqs_scan,
-	std::vector<PermSummary>& summaries_out
-) {
-	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
-		return hi_from_components_freq_excluding(hc, a, b);
-	};
-	return permute_interchrom_summary_chrmarker_excl_focus_T(
-		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
-		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out, &freqs_scan
-	);
-}
-
-template<typename HC, typename HiExcludeFn>
-static bool permute_sample_vector_summary_excl_focus_T(
-	const Eigen::MatrixXf& X_scan,
-	const Eigen::VectorXf& g_raw,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HC& hc_full,
-	HiExcludeFn hi_excluding,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	std::vector<PermSummary>& summaries_out,
-	const std::vector<MarkerFreq>* freqs_scan = nullptr
-) {
-	(void)chroms_scan;
-	(void)pos_scan;
-
-	if (n_perm <= 0) {
-		summaries_out.clear();
-		return true;
-	}
-
-	const int nsamples = opt.nsamples;
-	if (g_raw.size() != nsamples) {
-		std::cerr << "Error: permute_sample_vector_summary_excl_focus: g_raw length does not match nsamples\n";
-		return false;
-	}
-
-	if (sample_size <= 0)
-		sample_size = 200000;
-
-	const int tile_size = opt.tile_size;
-	const float denom = 1.0f / (float)(nsamples - 1);
-
-	const int C = (int)chr_order_scan.size();
-
-	struct ChrCache {
-		const std::vector<int>* idx = nullptr;
-		Eigen::VectorXf gZ;
-		Eigen::MatrixXf Zc;
-		int m = 0;
-		bool ok = false;
-	};
-
-	std::vector<ChrCache> cache((size_t)C);
-
-	for (int c = 0; c < C; ++c) {
-		const auto& chr = chr_order_scan[c];
-		auto it = windows_by_chr_scan.find(chr);
-		if (it == windows_by_chr_scan.end())
-			continue;
-
-		cache[(size_t)c].idx = &it->second;
-		cache[(size_t)c].m = (int)it->second.size();
-		if (cache[(size_t)c].m <= 0)
-			continue;
-
-		Eigen::VectorXf h = hi_excluding(hc_full, chr, std::string(""));
-
-		int g_valid = 0;
-		try {
-			cache[(size_t)c].gZ = residualize_and_zscore_vector(g_raw, h, g_valid);
-		} catch (...) {
-			continue;
-		}
-
-		int n_valid = 0;
-		try {
-			cache[(size_t)c].Zc = residualize_and_zscore_subset(X_scan, h, *cache[(size_t)c].idx, n_valid, freqs_scan);
-		} catch (...) {
-			continue;
-		}
-
-		cache[(size_t)c].ok = true;
-	}
-
-	int nthreads = 1;
-	#ifdef ADMIXLD_HAS_OPENMP
-	nthreads = opt.threads;
-	if (nthreads < 1) nthreads = 1;
-	omp_set_dynamic(0);
-	omp_set_num_threads(nthreads);
-	#endif
-
-	summaries_out.clear();
-	summaries_out.resize((size_t)n_perm);
-
-	std::cout << "Permutation test (excl-focus, sample-haplo; full shuffle): " << n_perm << " replicates";
-	#ifdef ADMIXLD_HAS_OPENMP
-	std::cout << " using " << nthreads << " threads";
-	#endif
-	std::cout << "\n";
-	std::cout << "  sample_size = " << sample_size << "\n";
-
-	#ifdef ADMIXLD_HAS_OPENMP
-	#pragma omp parallel for schedule(dynamic) num_threads(nthreads)
-	#endif
-	for (int rep = 0; rep < n_perm; ++rep) {
-		std::mt19937_64 rng(seed + (uint64_t)rep);
-
-		std::vector<int> perm(nsamples);
-		for (int i = 0; i < nsamples; ++i)
-			perm[i] = i;
-		std::shuffle(perm.begin(), perm.end(), rng);
-
-		PermSummary s;
-		s.min_r = std::numeric_limits<float>::infinity();
-		s.max_r = -std::numeric_limits<float>::infinity();
-
-		std::vector<float> sample;
-		sample.reserve((size_t)sample_size);
-		long long seen = 0;
-
-		Eigen::MatrixXf B(nsamples, tile_size);
-		Eigen::RowVectorXf R(tile_size);
-
-		for (int c = 0; c < C; ++c) {
-			const auto& cc = cache[(size_t)c];
-			if (!cc.ok || cc.m <= 0)
-				continue;
-
-			// Permute gZ rows; Zc markers remain in natural order
-			Eigen::VectorXf gZ_perm(nsamples);
-			for (int i = 0; i < nsamples; ++i)
-				gZ_perm(i) = cc.gZ(perm[i]);
-
-			const int m = cc.m;
-
-			for (int j0 = 0; j0 < m; j0 += tile_size) {
-				const int b2 = std::min(tile_size, m - j0);
-
-				for (int k = 0; k < b2; ++k)
-					B.col(k) = cc.Zc.col(j0 + k);
-
-				R.head(b2).noalias() = gZ_perm.transpose() * B.leftCols(b2);
-				R.head(b2) *= denom;
-
-				for (int k = 0; k < b2; ++k) {
-					float r = R(k);
-					if (!std::isfinite(r))
-						continue;
-
-					if (r < s.min_r) s.min_r = r;
-					if (r > s.max_r) s.max_r = r;
-
-					++seen;
-					if ((int)sample.size() < sample_size) {
-						sample.push_back(r);
-					} else {
-						std::uniform_int_distribution<long long> U(0, seen - 1);
-						long long jj = U(rng);
-						if (jj < sample_size)
-							sample[(size_t)jj] = r;
-					}
-				}
-			}
-		}
-
-		double mu = 0.0;
-		double m2_acc = 0.0;
-		double mu_r2 = 0.0;
-		double m2_r2 = 0.0;
-		long long n = 0;
-		for (float x : sample) {
-			if (!std::isfinite(x))
-				continue;
-			++n;
-			double dx = (double)x - mu;
-			mu += dx / (double)n;
-			double dx2 = (double)x - mu;
-			m2_acc += dx * dx2;
-			double r2 = (double)x * (double)x;
-			double dr2 = r2 - mu_r2;
-			mu_r2 += dr2 / (double)n;
-			m2_r2 += dr2 * (r2 - mu_r2);
-		}
-		s.mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
-		s.sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
-		s.mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
-		s.sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
-
-		std::sort(sample.begin(), sample.end());
-		s.p01 = quantile_from_sorted(sample, 0.01);
-		s.p05 = quantile_from_sorted(sample, 0.05);
-		s.p25 = quantile_from_sorted(sample, 0.25);
-		s.median = quantile_from_sorted(sample, 0.50);
-		s.p75 = quantile_from_sorted(sample, 0.75);
-		s.p95 = quantile_from_sorted(sample, 0.95);
-		s.p99 = quantile_from_sorted(sample, 0.99);
-
-		summaries_out[(size_t)rep] = s;
-	}
-
-	return true;
-}
-
-bool permute_sample_vector_summary_excl_focus(
-	const Eigen::MatrixXf& X_scan,
-	const Eigen::VectorXf& g_raw,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsWeighted& hc_full,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	std::vector<PermSummary>& summaries_out
-) {
-	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
-		return hi_from_components_weighted_excluding(hc, a, b);
-	};
-	return permute_sample_vector_summary_excl_focus_T(
-		X_scan, g_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
-		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out
-	);
-}
-
-bool permute_sample_vector_summary_excl_focus(
-	const Eigen::MatrixXf& X_scan,
-	const Eigen::VectorXf& g_raw,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsFreq& hc_full,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	const std::vector<MarkerFreq>& freqs_scan,
-	std::vector<PermSummary>& summaries_out
-) {
-	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
-		return hi_from_components_freq_excluding(hc, a, b);
-	};
-	return permute_sample_vector_summary_excl_focus_T(
-		X_scan, g_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
-		hc_full, fn, opt, seed, n_perm, sample_size, summaries_out, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
 	);
 }

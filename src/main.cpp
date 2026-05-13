@@ -59,10 +59,9 @@ static void usage() {
 		<< "  --tile-size INT		 tile size for processing (default: 1024)\n"
 		<< "  --threads INT          Number of OpenMP threads for scan steps (default: 1)\n"
 		<< "  --distrib              Write empirical scan distribution summary\n"
+		<< "  --distrib-raw          Write raw reservoir sample to *.scan.summary.reservoir.tsv (implies --distrib)\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distribution summary (default: 200000)\n"
-		<< "  --permute N            Run N interchrom full-shuffle permutations (summary stats)\n"
-		<< "  --permute-sample INT   Reservoir sample size for percentile estimates (default: 200000)\n"
-		<< "  --seed INT             RNG seed for permutations (default: 1)\n"
+		<< "  --seed INT             RNG seed for distribution summary (default: 1)\n"
 		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
 		<< "  --no-chr STR           Exclude this chromosome (repeatable; opposite of --chr)\n"
 		<< "  --bed FILE             Keep markers whose position is within BED intervals (chr start end; no header)\n"
@@ -110,10 +109,9 @@ struct CliOptions {
 	int threads = 1;
 
 	bool distrib = false;
+	bool distrib_raw = false;
 	int distrib_sample = 200000;
 
-	int n_perm = 0;
-	int perm_sample = 200000;
 	uint64_t seed = 1;
 
 	double min_abs_r = 0.0;
@@ -179,16 +177,14 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--threads" && i + 1 < argc) {
 			opt.threads = std::stoi(argv[++i]);
 
-		} else if (a == "--permute" && i + 1 < argc) {
-			opt.n_perm = std::stoi(argv[++i]);
-
-		} else if (a == "--permute-sample" && i + 1 < argc) {
-			opt.perm_sample = std::stoi(argv[++i]);
-
 		} else if (a == "--seed" && i + 1 < argc) {
 			opt.seed = (uint64_t)std::stoull(argv[++i]);
 
 		} else if (a == "--distrib") {
+			opt.distrib = true;
+
+		} else if (a == "--distrib-raw") {
+			opt.distrib_raw = true;
 			opt.distrib = true;
 
 		} else if (a == "--distrib-sample" && i + 1 < argc) {
@@ -756,31 +752,6 @@ static void print_residualization_sanity(const Eigen::MatrixXf& Z) {
 	}
 }
 
-static void write_perm_summary_tsv(
-	const std::string& path,
-	const std::vector<PermSummary>& summ
-) {
-	std::ofstream pf(path);
-	pf << "rep\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
-
-	for (int r = 0; r < (int)summ.size(); ++r) {
-		pf << r
-			<< "\t" << summ[r].max_r
-			<< "\t" << summ[r].p99
-			<< "\t" << summ[r].p95
-			<< "\t" << summ[r].p75
-			<< "\t" << summ[r].median
-			<< "\t" << summ[r].p25
-			<< "\t" << summ[r].p05
-			<< "\t" << summ[r].p01
-			<< "\t" << summ[r].min_r
-			<< "\t" << summ[r].mean
-			<< "\t" << summ[r].sd
-			<< "\t" << summ[r].mean_r2
-			<< "\t" << summ[r].sd_r2
-			<< "\n";
-	}
-}
 
 static bool compute_keep_sample_idx(
 	const std::string& keep_indv_path,
@@ -1125,119 +1096,6 @@ int main(int argc, char** argv) {
 	print_residualization_sanity(Z);
 	std::cout << std::flush;
 
-	// Stage 10: Scan options for permutations (symmetric only)
-	ScanOptions popt;
-	popt.intra = cli.intra;
-	popt.max_dist = cli.max_dist;
-	popt.tile_size = cli.tile_size;
-	popt.nsamples = (int)Z.rows();
-	popt.threads = cli.threads;
-	popt.min_abs_r = (float)cli.min_abs_r;
-	popt.use_asym = false;
-	popt.min_neg_r = 0.0f;
-	popt.min_pos_r = 0.0f;
-
-	// Stage 10a: Sample-geno permutation test
-	if (sample_haplo_mode && cli.n_perm > 0) {
-		std::vector<PermSummary> summ;
-
-		std::cout << "Permutation test (sample-haplo vs markers):\n";
-		std::cout << "  n_perm      = " << cli.n_perm << "\n";
-		std::cout << "  seed        = " << cli.seed << "\n";
-		std::cout << "  sample_size = " << cli.perm_sample << "\n";
-
-		if (cli.hi_mode == "global") {
-			if (!permute_sample_vector_summary(
-				Z, gZ,
-				markers_by_chr, chr_order,
-				popt,
-				cli.seed, cli.n_perm, cli.perm_sample,
-				summ
-			))
-				return 1;
-		} else {
-			if (!g_loaded) {
-				std::cerr << "Error: sample-haplo vector was not loaded\n";
-				return 1;
-			}
-			if (!has_hc_full) {
-				std::cerr << "Error: HI components missing for excl-focus mode\n";
-				return 1;
-			}
-			bool perm_ok;
-			if (use_ref_freq) {
-				perm_ok = permute_sample_vector_summary_excl_focus(
-					X, g, chroms, pos, markers_by_chr, chr_order,
-					hc_freq_full, popt, cli.seed, cli.n_perm, cli.perm_sample, freqs_scan, summ
-				);
-			} else {
-				perm_ok = permute_sample_vector_summary_excl_focus(
-					X, g, chroms, pos, markers_by_chr, chr_order,
-					hc_full, popt, cli.seed, cli.n_perm, cli.perm_sample, summ
-				);
-			}
-			if (!perm_ok)
-				return 1;
-		}
-
-		std::string perm_path = cli.out + ".samplehaplo.perm.summary.tsv";
-		write_perm_summary_tsv(perm_path, summ);
-		std::cout << "  wrote permutation summaries: " << perm_path << "\n";
-		return 0;
-	}
-
-	// Stage 10b: Marker/marker permutation test (interchrom chr-marker)
-	if (cli.n_perm > 0) {
-		if (cli.intra) {
-			std::cerr << "Error: --permute is currently implemented for interchrom scans only (omit --intra).\n";
-			return 1;
-		}
-
-		std::vector<PermSummary> summ;
-
-		std::cout << "Permutation test (interchrom, chr-marker):\n";
-		std::cout << "  n_perm      = " << cli.n_perm << "\n";
-		std::cout << "  seed        = " << cli.seed << "\n";
-		std::cout << "  perm_sample = " << cli.perm_sample << "\n";
-		std::cout << std::flush;
-
-		if (cli.hi_mode == "global") {
-			if (!permute_interchrom_summary_chrmarker(
-				Z,
-				markers_by_chr, chr_order,
-				popt,
-				cli.seed, cli.n_perm, cli.perm_sample,
-				summ
-			))
-				return 1;
-		} else {
-			if (!has_hc_full) {
-				std::cerr << "Error: HI components missing for excl-focus mode\n";
-				return 1;
-			}
-			bool perm_ok;
-			if (use_ref_freq) {
-				perm_ok = permute_interchrom_summary_chrmarker_excl_focus(
-					X, chroms, pos, markers_by_chr, chr_order,
-					hc_freq_full, popt, cli.seed, cli.n_perm, cli.perm_sample, freqs_scan, summ
-				);
-			} else {
-				perm_ok = permute_interchrom_summary_chrmarker_excl_focus(
-					X, chroms, pos, markers_by_chr, chr_order,
-					hc_full, popt, cli.seed, cli.n_perm, cli.perm_sample, summ
-				);
-			}
-			if (!perm_ok)
-				return 1;
-		}
-
-		std::string perm_path = cli.out + ".perm.summary.tsv";
-		write_perm_summary_tsv(perm_path, summ);
-		std::cout << "  wrote permutation summaries: " << perm_path << "\n";
-		std::cout << "Permutation mode (--permute was set). Skipping hits scan.\n";
-		return 0;
-	}
-
 	// Stage 11: Final scan options (including asymmetric filtering)
 	bool use_asym = false;
 	float min_neg_r = 0.0f;
@@ -1261,8 +1119,11 @@ int main(int argc, char** argv) {
 	if (sample_haplo_mode) {
 		std::string out_path = cli.out + ".samplehaplo.hits.tsv";
 		std::string distrib_path;
+		std::string reservoir_path;
 		if (cli.distrib)
 			distrib_path = cli.out + ".samplehaplo.scan.summary.tsv";
+		if (cli.distrib_raw)
+			reservoir_path = cli.out + ".samplehaplo.scan.summary.reservoir.tsv";
 
 		long long tested = 0;
 		long long kept = 0;
@@ -1280,7 +1141,8 @@ int main(int argc, char** argv) {
 				kept,
 				distrib_path,
 				cli.distrib_sample,
-				cli.seed
+				cli.seed,
+				reservoir_path
 			))
 				return 1;
 
@@ -1299,13 +1161,13 @@ int main(int argc, char** argv) {
 				scan_ok = scan_vector_vs_windows_write_hits_excl_focus(
 					X, g, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, out_path, tested, kept,
-					freqs_scan, distrib_path, cli.distrib_sample, cli.seed
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
 				);
 			} else {
 				scan_ok = scan_vector_vs_windows_write_hits_excl_focus(
 					X, g, chroms, pos, markers_by_chr, chr_order,
 					hc_full, opt, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
 				);
 			}
 			if (!scan_ok)
@@ -1318,6 +1180,8 @@ int main(int argc, char** argv) {
 		std::cout << "  wrote        = " << out_path << "\n";
 		if (cli.distrib)
 			std::cout << "  wrote        = " << distrib_path << "\n";
+		if (cli.distrib_raw)
+			std::cout << "  wrote        = " << reservoir_path << "\n";
 
 		return 0;
 	}
@@ -1325,8 +1189,11 @@ int main(int argc, char** argv) {
 	// Stage 11b: Marker/marker scan
 	std::string out_path = cli.out + ".hits.tsv";
 	std::string distrib_path;
+	std::string reservoir_path;
 	if (cli.distrib)
 		distrib_path = cli.out + ".scan.summary.tsv";
+	if (cli.distrib_raw)
+		reservoir_path = cli.out + ".scan.summary.reservoir.tsv";
 
 	long long tested = 0;
 	long long kept = 0;
@@ -1339,14 +1206,14 @@ int main(int argc, char** argv) {
 			if (!scan_target_write_hits(
 				Z, chroms, pos, markers_by_chr, chr_order,
 				opt, target_w, out_path, tested, kept,
-				distrib_path, cli.distrib_sample, cli.seed
+				distrib_path, cli.distrib_sample, cli.seed, reservoir_path
 			))
 				return 1;
 		} else {
 			if (!scan_markers_write_hits(
 				Z, chroms, pos, markers_by_chr, chr_order,
 				opt, out_path, tested, kept,
-				distrib_path, cli.distrib_sample, cli.seed
+				distrib_path, cli.distrib_sample, cli.seed, reservoir_path
 			))
 				return 1;
 		}
@@ -1357,13 +1224,13 @@ int main(int argc, char** argv) {
 				scan_ok = scan_target_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, target_w, out_path, tested, kept,
-					freqs_scan, distrib_path, cli.distrib_sample, cli.seed
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
 				);
 			} else {
 				scan_ok = scan_target_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_full, opt, target_w, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
 				);
 			}
 			if (!scan_ok) return 1;
@@ -1373,13 +1240,13 @@ int main(int argc, char** argv) {
 				scan_ok = scan_markers_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, out_path, tested, kept,
-					freqs_scan, distrib_path, cli.distrib_sample, cli.seed
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
 				);
 			} else {
 				scan_ok = scan_markers_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_full, opt, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
 				);
 			}
 			if (!scan_ok) return 1;
@@ -1392,6 +1259,8 @@ int main(int argc, char** argv) {
 	std::cout << "  wrote        = " << out_path << "\n";
 	if (cli.distrib)
 		std::cout << "  wrote        = " << distrib_path << "\n";
+	if (cli.distrib_raw)
+		std::cout << "  wrote        = " << reservoir_path << "\n";
 
 	if (use_asym) {
 		std::cout << "  r filter    = ";

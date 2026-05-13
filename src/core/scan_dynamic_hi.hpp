@@ -23,7 +23,8 @@ bool scan_markers_write_hits_excl_focus(
 	long long& kept_pairs,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
 bool scan_markers_write_hits_excl_focus(
@@ -40,7 +41,8 @@ bool scan_markers_write_hits_excl_focus(
 	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
 bool scan_target_write_hits_excl_focus(
@@ -57,7 +59,8 @@ bool scan_target_write_hits_excl_focus(
 	long long& kept_pairs,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
 bool scan_target_write_hits_excl_focus(
@@ -75,7 +78,8 @@ bool scan_target_write_hits_excl_focus(
 	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
 bool scan_vector_vs_windows_write_hits_excl_focus(
@@ -92,7 +96,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	long long& kept_pairs,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
 bool scan_vector_vs_windows_write_hits_excl_focus(
@@ -110,65 +115,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const std::vector<MarkerFreq>& freqs_scan,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
-	uint64_t distrib_seed = 1
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
-bool permute_interchrom_summary_chrmarker_excl_focus(
-	const Eigen::MatrixXf& X_scan,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsWeighted& hc_full,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	std::vector<PermSummary>& summaries_out
-);
-
-bool permute_interchrom_summary_chrmarker_excl_focus(
-	const Eigen::MatrixXf& X_scan,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsFreq& hc_full,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	const std::vector<MarkerFreq>& freqs_scan,
-	std::vector<PermSummary>& summaries_out
-);
-
-bool permute_sample_vector_summary_excl_focus(
-	const Eigen::MatrixXf& X_scan,
-	const Eigen::VectorXf& g_raw,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsWeighted& hc_full,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	std::vector<PermSummary>& summaries_out
-);
-
-bool permute_sample_vector_summary_excl_focus(
-	const Eigen::MatrixXf& X_scan,
-	const Eigen::VectorXf& g_raw,
-	const std::vector<std::string>& chroms_scan,
-	const std::vector<int>& pos_scan,
-	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr_scan,
-	const std::vector<std::string>& chr_order_scan,
-	const HiComponentsFreq& hc_full,
-	const ScanOptions& opt,
-	uint64_t seed,
-	int n_perm,
-	int sample_size,
-	const std::vector<MarkerFreq>& freqs_scan,
-	std::vector<PermSummary>& summaries_out
-);

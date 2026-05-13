@@ -1,6 +1,6 @@
 # AdmixLD
 
-A command-line tool for detecting **ancestry disequilibrium (AD)** in hybrid zones and admixed populations.
+A command-line tool for detecting **excess ancestry linkage disequilibrium** in hybrid zones and admixed populations.
 
 ---
 
@@ -95,10 +95,17 @@ Optional inputs:
 
 ```bash
 # Genome-wide interchromosomal scan writing hits with a minimum aboslute value of r
-# Also outputs the genome-wide distribution of r values
+./build/admixld --vcf example_data_files/data.vcf.gz --out results \
+	--min-abs-r 0.5 \
+	--chr scaffold-ma1 \
+	--chr scaffold-ma2
+
+# Genome-wide interchromosomal scan writing hits with a minimum aboslute value of r
+# Also outputs the genome-wide distribution of r values (with the sampled r values used to estimate the distribution)
 ./build/admixld --vcf example_data_files/data.vcf.gz --out results \
 	--min-abs-r 0.5 \
 	--distrib \
+	--distrib-raw \
 	--chr scaffold-ma1 \
 	--chr scaffold-ma2
 
@@ -121,11 +128,6 @@ Optional inputs:
 	--hi-mode excl-focus \
 	--min-abs-r 0.5
 
-# Permutation test
-./build/admixld --vcf data.vcf.gz --out permutation \
-	--permute 10 \
-	--threads 8 --seed 123
-
 # Compute hybrid index only and exit
 ./build/admixld --vcf data.vcf.gz --out results --compute-hi
 ```
@@ -137,8 +139,8 @@ Optional inputs:
 |------|-------------|-------------|
 | `<prefix>.hits.tsv` | Always (unless `--compute-hi`) | Marker pairs exceeding the correlation threshold |
 | `<prefix>.hi.tsv` | When HI is computed | Per-sample hybrid index |
-| `<prefix>.perm.summary.tsv` | `--permute N` | Per-replicate permutation statistics |
-| `<prefix>.scan.summary.tsv` | `--distrib` | Empirical scan distribution summary |
+| `<prefix>.scan.summary.tsv` | `--distrib` | Empirical scan distribution summary (quantiles, mean, SD) |
+| `<prefix>.scan.summary.reservoir.tsv` | `--distrib-raw` | Raw reservoir sample of r values (single column `r`) |
 
 The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n`.
 
