@@ -1,20 +1,35 @@
 cff-version: 1.2.0
 message: "If you use AdmixLD, please cite the following paper."
 type: software
-title: AdmixLD
-version: 0.9.0
+title: "AdmixLD: Fast genome-scale inference of ancestry disequilibrium in hybrid zones"
+version: 0.9.1
 license: MIT
 repository-code: https://github.com/yzfranci/AdmixLD
 authors:
-  - family-names: TODO
-    given-names: TODO
-    orcid: https://orcid.org/TODO
+  - family-names: Francioli
+    given-names: Yannick Z.
+  - family-names: Adams
+    given-names: Richard H.
+  - family-names: Ballard
+    given-names: Kaas
+  - family-names: Gompert
+    given-names: Zachariah
+  - family-names: Castoe
+    given-names: Todd A.
 preferred-citation:
   type: article
-  title: "TODO: paper title"
+  title: "AdmixLD: Fast genome-scale inference of ancestry disequilibrium in hybrid zones"
   authors:
-    - family-names: TODO
-      given-names: TODO
+    - family-names: Francioli
+      given-names: Yannick Z.
+    - family-names: Adams
+      given-names: Richard H.
+    - family-names: Ballard
+      given-names: Kaas
+    - family-names: Gompert
+      given-names: Zachariah
+    - family-names: Castoe
+      given-names: Todd A.
   journal: "TODO"
   year: TODO
   doi: "TODO"
