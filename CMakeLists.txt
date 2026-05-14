@@ -43,3 +43,6 @@ if(OpenMP_CXX_FOUND)
 	target_link_libraries(admixld PRIVATE OpenMP::OpenMP_CXX)
 	target_compile_definitions(admixld PRIVATE ADMIXLD_HAS_OPENMP=1)
 endif()
+
+include(GNUInstallDirs)
+install(TARGETS admixld RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
