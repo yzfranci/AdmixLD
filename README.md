@@ -10,6 +10,8 @@ AdmixLD scans for pairwise correlations between residualized ancestry markers â€
 
 Each marker's dosage is residualized on the genome-wide hybrid index (HI), controlling for linkage disequilibrium due to admixture alone. Pearson correlations between residualized markers are then computed across the genome (interchromosomal by default, intrachromosomal with `--intra`).
 
+For more comprehensive documentation, see [documentation.md](documentation.md).
+
 ---
 
 ## Requirements & Installation
