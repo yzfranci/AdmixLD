@@ -10,11 +10,14 @@ AdmixLD scans for pairwise correlations between residualized ancestry markers â€
 
 Each marker's dosage is residualized on the genome-wide hybrid index (HI), controlling for linkage disequilibrium due to admixture alone. Pearson correlations between residualized markers are then computed across the genome (interchromosomal by default, intrachromosomal with `--intra`).
 
+For more comprehensive documentation, see [documentation.md](documentation.md).
+
 ---
 
 ## Requirements & Installation
 
 ### Linux (Ubuntu / Debian)
+In order to install on a Debian based system, you will need to install the following system level packages:
 
 ```bash
 # HTSlib (VCF/BCF I/O)
@@ -26,9 +29,20 @@ sudo apt-get install -y libeigen3-dev
 # OpenMP â€” bundled with GCC; install GCC if not already present
 sudo apt-get install -y gcc g++
 ```
+#### Clone repository
+After you have installed the necessary system level packages, clone the repository:
+
+```bash
+git clone https://github.com/yzfranci/AdmixLD.git
+```
 
 #### Build
+Once you have cloned the repository, make sure to move into the new directory:
+```bash
+cd AdmixLD
+```
 
+Now that you are in that directory, run the following commands to build the program:
 ```bash
 rm -rf build
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -36,7 +50,7 @@ cmake --build build -j
 ```
 
 #### Add to PATH
-
+To make the executable callable from anywhere within the installed user, run the following to add the build directory to your PATH and restart your shell:
 ```bash
 echo "export PATH=\"$(pwd)/build:\$PATH\"" >> ~/.bashrc
 source ~/.bashrc
@@ -45,6 +59,7 @@ source ~/.bashrc
 ---
 
 ### macOS (Homebrew)
+In order to install on a MacOS based system, you will need to install the following system level packages with brew. To install brew, follow the guide here: https://brew.sh/
 
 ```bash
 # HTSlib, pkg-config, Eigen3
@@ -52,6 +67,13 @@ brew install htslib pkg-config eigen
 
 # GCC with OpenMP (replaces Apple Clang for this build)
 brew install gcc
+```
+
+#### Clone repository
+After you have installed the necessary system level packages, clone the repository:
+
+```bash
+git clone https://github.com/yzfranci/AdmixLD.git
 ```
 
 #### Build
@@ -67,10 +89,17 @@ cmake --build build -j
 ```
 
 #### Add to PATH
+To make the executable callable from anywhere within the installed user, run the following to add the build directory to your PATH and restart your shell:
 
 ```bash
 echo "export PATH=\"$(pwd)/build:\$PATH\"" >> ~/.zshrc
 source ~/.zshrc
+```
+
+If you are using ``bash`` as your shell on MacOS, run this instead:
+```bash
+echo "export PATH=\"$(pwd)/build:\$PATH\"" >> ~/.bashrc
+source ~/.bashrc
 ```
 
 ---

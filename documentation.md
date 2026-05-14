@@ -11,7 +11,7 @@ AdmixLD is a command-line tool for detecting **excess ancestry linkage disequili
 ## Requirements & Installation
 
 ### Linux (Ubuntu / Debian)
-
+Use the following commands to install required system level packages required by AdmixLD:
 ```bash
 # HTSlib (VCF/BCF I/O)
 sudo apt-get install -y libhts-dev pkg-config
@@ -25,8 +25,15 @@ sudo apt-get install -y gcc g++
 
 OpenMP support is detected automatically by CMake. The build succeeds without it, but `--threads` will have no effect.
 
-#### Build
+#### Clone repository
+After you have installed the necessary system level packages, clone the repository:
+```bash
+git clone https://github.com/yzfranci/AdmixLD.git
+cd AdmixLD
+```
 
+#### Build
+To build the program, run the following:
 ```bash
 rm -rf build
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -34,7 +41,7 @@ cmake --build build -j
 ```
 
 #### Add to PATH
-
+To make the executable callable from anywhere within the installed user, run the following to add the build directory to your PATH and restart your shell:
 ```bash
 echo "export PATH=\"$(pwd)/build:\$PATH\"" >> ~/.bashrc
 source ~/.bashrc
@@ -43,7 +50,7 @@ source ~/.bashrc
 ---
 
 ### macOS (Homebrew)
-
+Use the following commands to install required system level packages required by AdmixLD:
 ```bash
 # Homebrew (if not already installed)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -53,6 +60,12 @@ brew install htslib pkg-config eigen
 
 # GCC with OpenMP support
 brew install gcc
+```
+#### Clone repository
+After you have installed the necessary system level packages, clone the repository:
+```bash
+git clone https://github.com/yzfranci/AdmixLD.git
+cd AdmixLDs
 ```
 
 #### Build
@@ -68,10 +81,15 @@ cmake --build build -j
 ```
 
 #### Add to PATH
-
+To make the executable callable from anywhere within the installed user, run the following to add the build directory to your PATH and restart your shell:
 ```bash
 echo "export PATH=\"$(pwd)/build:\$PATH\"" >> ~/.zshrc
 source ~/.zshrc
+```
+Note that newer versions of MacOS use zsh as the default shell. If you are using bash as your default shell, run the following instead:
+```bash
+echo "export PATH=\"$(pwd)/build:\$PATH\"" >> ~/.bashrc
+source ~/.bashrc
 ```
 
 The binary is placed at `build/admixld`.
