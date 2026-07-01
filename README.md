@@ -157,6 +157,13 @@ Optional inputs:
 	--hi-mode excl-focus \
 	--min-abs-r 0.5
 
+# Genome-wide interchromosomal scan with empirical-null + Storey q-value FDR
+# hit calling instead of a fixed |r| threshold
+./build/admixld --vcf example_data_files/data.vcf.gz --out results \
+	--fdr 0.01 \
+	--chr scaffold-ma1 \
+	--chr scaffold-ma2
+
 # Compute hybrid index only and exit
 ./build/admixld --vcf data.vcf.gz --out results --compute-hi
 ```
@@ -170,8 +177,9 @@ Optional inputs:
 | `<prefix>.hi.tsv` | When HI is computed | Per-sample hybrid index |
 | `<prefix>.scan.summary.tsv` | `--distrib` | Empirical scan distribution summary (quantiles, mean, SD) |
 | `<prefix>.scan.summary.reservoir.tsv` | `--distrib-raw` | Raw reservoir sample of r values (single column `r`) |
+| `<prefix>.empirical_null.summary.tsv` | `--fdr` | Per-chromosome-pair empirical-null calibration summary (`mu0`, `sigma0`, `lambda`, `pi0`, hit counts) |
 
-The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n`.
+The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n` — plus `z`, `zstar`, `pvalue`, `qvalue`, `local_fdr` when `--fdr` is used, in place of a fixed `--min-abs-r` threshold. See [documentation.md](documentation.md#empirical-null-fdr) for the method.
 
 See [documentation.md](documentation.md) for the full flag reference, file format specifications, and method details.
 

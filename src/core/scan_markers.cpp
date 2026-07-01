@@ -1,4 +1,5 @@
 #include "scan_markers.hpp"
+#include "empirical_null.hpp"
 
 #include <cmath>
 #include <fstream>
@@ -486,6 +487,235 @@ bool scan_markers_write_hits(
 				rf << x << "\n";
 		}
 	}
+
+	return true;
+}
+
+bool scan_markers_write_hits_fdr(
+	const Eigen::MatrixXf& Z,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	const std::string& summary_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	uint64_t seed
+) {
+	if (opt.intra) {
+		std::cerr << "Error: scan_markers_write_hits_fdr does not support --intra (phase 1 is interchromosomal only)\n";
+		return false;
+	}
+
+	const int nsamples = opt.nsamples;
+	const int tile_size = opt.tile_size;
+	const float denom = 1.0f / (float)(nsamples - 1);
+	const int rsample = opt.fdr_sample > 0 ? opt.fdr_sample : 200000;
+
+	std::cout << "[scan-fdr] target_fdr=" << opt.fdr_target
+		  << " fdr_sample=" << rsample
+		  << " fdr_min_pairs=" << opt.fdr_min_pairs
+		  << " fdr_lambda=" << opt.fdr_lambda_cut
+		  << " tile_size=" << tile_size << "\n";
+
+	tested_pairs = 0;
+	kept_pairs = 0;
+
+	int nthreads = 1;
+	#ifdef ADMIXLD_HAS_OPENMP
+		nthreads = opt.threads;
+		omp_set_num_threads(nthreads);
+	#endif
+
+	std::vector<std::string> hit_part_paths((size_t)nthreads);
+	std::vector<std::string> summary_part_paths((size_t)nthreads);
+	for (int t = 0; t < nthreads; ++t) {
+		hit_part_paths[(size_t)t] = out_path + ".part." + std::to_string(t);
+		summary_part_paths[(size_t)t] = summary_path + ".part." + std::to_string(t);
+		std::remove(hit_part_paths[(size_t)t].c_str());
+		std::remove(summary_part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<long long> tested_t((size_t)nthreads, 0);
+	std::vector<long long> kept_t((size_t)nthreads, 0);
+	std::vector<std::mt19937_64> rngs((size_t)nthreads);
+	for (int t = 0; t < nthreads; ++t)
+		rngs[(size_t)t] = std::mt19937_64(seed + (uint64_t)t);
+
+	const int C = (int)chr_order.size();
+	std::vector<std::pair<int,int>> jobs;
+	jobs.reserve((size_t)C * (size_t)(C - 1) / 2);
+	for (int c1 = 0; c1 < C; ++c1)
+		for (int c2 = c1 + 1; c2 < C; ++c2)
+			jobs.push_back({c1, c2});
+
+	#ifdef ADMIXLD_HAS_OPENMP
+	#pragma omp parallel for schedule(dynamic)
+	#endif
+	for (int j = 0; j < (int)jobs.size(); ++j) {
+		int tid = 0;
+		#ifdef ADMIXLD_HAS_OPENMP
+		tid = omp_get_thread_num();
+		#endif
+
+		const int c1 = jobs[(size_t)j].first;
+		const int c2 = jobs[(size_t)j].second;
+		const auto& chr1 = chr_order[c1];
+		const auto& chr2 = chr_order[c2];
+		const auto& idx1 = windows_by_chr.at(chr1);
+		const auto& idx2 = windows_by_chr.at(chr2);
+		const int m1 = (int)idx1.size();
+		const int m2 = (int)idx2.size();
+
+		std::ofstream hfp(hit_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+		std::ofstream sfp(summary_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+		if (!hfp || !sfp) {
+			#ifdef ADMIXLD_HAS_OPENMP
+			#pragma omp critical
+			#endif
+			{
+				std::cerr << "Error: cannot write part files for thread " << tid << "\n";
+			}
+			continue;
+		}
+
+		Eigen::MatrixXf A(nsamples, tile_size);
+		Eigen::MatrixXf B(nsamples, tile_size);
+		Eigen::MatrixXf R(tile_size, tile_size);
+
+		// Tile loop over this chromosome-pair block; invokes cb(a, b, r) for
+		// every pair. Called twice per block (calibration pass, hit pass).
+		auto for_each_pair = [&](auto&& cb) {
+			for (int i0 = 0; i0 < m1; i0 += tile_size) {
+				const int b1 = std::min(tile_size, m1 - i0);
+				for (int k = 0; k < b1; ++k)
+					A.col(k) = Z.col(idx1[i0 + k]);
+
+				for (int j0 = 0; j0 < m2; j0 += tile_size) {
+					const int b2 = std::min(tile_size, m2 - j0);
+					for (int k = 0; k < b2; ++k)
+						B.col(k) = Z.col(idx2[j0 + k]);
+
+					R.topLeftCorner(b1, b2).noalias() = A.leftCols(b1).transpose() * B.leftCols(b2);
+					R.topLeftCorner(b1, b2) *= denom;
+
+					for (int ia = 0; ia < b1; ++ia) {
+						const int a = idx1[i0 + ia];
+						for (int ib = 0; ib < b2; ++ib) {
+							const int b = idx2[j0 + ib];
+							cb(a, b, R(ia, ib));
+						}
+					}
+				}
+			}
+		};
+
+		// Pass 1: exact pair count + reservoir sample of z = atanh(r).
+		long long m_local = 0;
+		std::vector<double> reservoir;
+		reservoir.reserve((size_t)rsample);
+		auto& rng = rngs[(size_t)tid];
+
+		for_each_pair([&](int, int, float r) {
+			++m_local;
+			float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
+			double z = std::atanh((double)rc);
+			if ((int)reservoir.size() < rsample) {
+				reservoir.push_back(z);
+			} else {
+				std::uniform_int_distribution<long long> U(0, m_local - 1);
+				long long jr = U(rng);
+				if (jr < rsample)
+					reservoir[(size_t)jr] = z;
+			}
+		});
+
+		NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
+
+		long long kept_local = 0;
+		long long hits_pos = 0, hits_neg = 0;
+
+		// Pass 2: apply the fitted per-tail zstar thresholds and write hits.
+		if (fit.ok && m_local >= opt.fdr_min_pairs) {
+			for_each_pair([&](int a, int b, float r) {
+				float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
+				double z = std::atanh((double)rc);
+				double zstar = (z - fit.mu0) / fit.sigma0;
+
+				bool is_pos_hit = std::isfinite(fit.zstar_thresh_pos) && zstar >= fit.zstar_thresh_pos;
+				bool is_neg_hit = !is_pos_hit && std::isfinite(fit.zstar_thresh_neg) && zstar <= fit.zstar_thresh_neg;
+
+				if (!is_pos_hit && !is_neg_hit)
+					return;
+
+				double pvalue = is_pos_hit ? (1.0 - norm_cdf(zstar)) : norm_cdf(zstar);
+				double qvalue = qvalue_for_p(fit, is_pos_hit, pvalue);
+				double lfdr = local_fdr_for_z(fit, z);
+
+				hfp << a << "\t" << chroms[a] << "\t" << pos[a] << "\t"
+					<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
+					<< r << "\t" << nsamples << "\t"
+					<< z << "\t" << zstar << "\t" << pvalue << "\t" << qvalue << "\t" << lfdr << "\n";
+
+				++kept_local;
+				if (is_pos_hit) ++hits_pos; else ++hits_neg;
+			});
+		}
+
+		sfp << chr1 << "\t" << chr2 << "\t" << m_local << "\t"
+			<< (fit.ok && m_local >= opt.fdr_min_pairs ? "ok" : "skipped") << "\t"
+			<< fit.mu0 << "\t" << fit.sigma0 << "\t" << fit.lambda << "\t"
+			<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
+			<< hits_pos << "\t" << hits_neg << "\n";
+
+		tested_t[(size_t)tid] += m_local;
+		kept_t[(size_t)tid] += kept_local;
+	}
+
+	for (int t = 0; t < nthreads; ++t) {
+		tested_pairs += tested_t[(size_t)t];
+		kept_pairs += kept_t[(size_t)t];
+	}
+
+	{
+		std::ofstream of(out_path);
+		if (!of) {
+			std::cerr << "Error: cannot write to " << out_path << "\n";
+			return false;
+		}
+		of << "wA\tchrA\tposA\twB\tchrB\tposB\tr\tn\tz\tzstar\tpvalue\tqvalue\tlocal_fdr\n";
+		for (int t = 0; t < nthreads; ++t) {
+			std::ifstream pf(hit_part_paths[(size_t)t]);
+			if (!pf)
+				continue;
+			std::string line;
+			while (std::getline(pf, line))
+				of << line << "\n";
+		}
+	}
+	for (int t = 0; t < nthreads; ++t)
+		std::remove(hit_part_paths[(size_t)t].c_str());
+
+	{
+		std::ofstream of(summary_path);
+		if (!of) {
+			std::cerr << "Error: cannot write to " << summary_path << "\n";
+			return false;
+		}
+		of << "chrA\tchrB\tn_pairs\tstatus\tmu0\tsigma0\tlambda\tpi0_pos\tpi0_neg\tn_hits_pos\tn_hits_neg\n";
+		for (int t = 0; t < nthreads; ++t) {
+			std::ifstream pf(summary_part_paths[(size_t)t]);
+			if (!pf)
+				continue;
+			std::string line;
+			while (std::getline(pf, line))
+				of << line << "\n";
+		}
+	}
+	for (int t = 0; t < nthreads; ++t)
+		std::remove(summary_part_paths[(size_t)t].c_str());
 
 	return true;
 }

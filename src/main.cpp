@@ -69,6 +69,10 @@ static void usage() {
 		<< "  --target-pos INT       Scan one target marker/pos vs all others (target position; matches single position)\n"
 		<< "  --ref-freq FILE        Parental allele frequency file (TSV: chrom pos p1 p2); VCF only\n"
 	<< "  --min-delta-afd FLOAT  Min |p1-p2| for --ref-freq markers (default: 0; dropped if below)\n"
+	<< "  --fdr FLOAT            Empirical-null + Storey q-value hit calling (target q-value); interchromosomal + --hi-mode global only; replaces --min-abs-r/--min-neg-r/--min-pos-r\n"
+	<< "  --fdr-sample INT       Per-chromosome-pair reservoir size for empirical-null calibration (default: 200000)\n"
+	<< "  --fdr-min-pairs INT    Minimum pairs in a chromosome-pair block to attempt calibration (default: 500)\n"
+	<< "  --fdr-lambda FLOAT     Storey pi0 tail cutoff (default: 0.5)\n"
 	<< "  --sample-haplo FILE    Per-sample mitochondrial haplotype TSV: sample<TAB>value (0 or 1 only; missing allowed)\n"
 	<< "  --keep-indv FILE       Keep only samples listed in FILE (one ID per line)\n";
 }
@@ -119,6 +123,12 @@ struct CliOptions {
 	bool has_min_pos_r = false;
 	float min_neg_r = 0.0f;
 	float min_pos_r = 0.0f;
+
+	bool has_fdr = false;
+	double fdr = 0.01;
+	int fdr_sample = 200000;
+	long long fdr_min_pairs = 500;
+	double fdr_lambda = 0.5;
 };
 
 static bool parse_args(int argc, char** argv, CliOptions& opt) {
@@ -227,6 +237,19 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 			opt.min_pos_r = std::stof(argv[++i]);
 			opt.has_min_pos_r = true;
 
+		} else if (a == "--fdr" && i + 1 < argc) {
+			opt.fdr = std::stod(argv[++i]);
+			opt.has_fdr = true;
+
+		} else if (a == "--fdr-sample" && i + 1 < argc) {
+			opt.fdr_sample = std::stoi(argv[++i]);
+
+		} else if (a == "--fdr-min-pairs" && i + 1 < argc) {
+			opt.fdr_min_pairs = std::stoll(argv[++i]);
+
+		} else if (a == "--fdr-lambda" && i + 1 < argc) {
+			opt.fdr_lambda = std::stod(argv[++i]);
+
 		} else {
 			std::cerr << "Unknown/invalid arg: " << a << "\n";
 			usage();
@@ -313,6 +336,49 @@ static int validate_options(const CliOptions& opt) {
 	if (opt.min_delta_afd < 0.0f) {
 		std::cerr << "Error: --min-delta-afd must be >= 0\n";
 		return 2;
+	}
+
+	if (opt.has_fdr) {
+		if (opt.fdr <= 0.0 || opt.fdr >= 1.0) {
+			std::cerr << "Error: --fdr must be in (0, 1)\n";
+			return 2;
+		}
+		if (opt.min_abs_r > 0.0 || opt.has_min_neg_r || opt.has_min_pos_r) {
+			std::cerr << "Error: --fdr is mutually exclusive with --min-abs-r/--min-neg-r/--min-pos-r\n";
+			return 2;
+		}
+		if (opt.intra) {
+			std::cerr << "Error: --fdr does not yet support --intra (interchromosomal only; planned as a follow-up)\n";
+			return 2;
+		}
+		if (opt.has_target) {
+			std::cerr << "Error: --fdr does not yet support --target-chr/--target-pos (planned as a follow-up)\n";
+			return 2;
+		}
+		if (!opt.sample_haplo_path.empty()) {
+			std::cerr << "Error: --fdr does not yet support --sample-haplo (planned as a follow-up)\n";
+			return 2;
+		}
+		if (opt.hi_mode != "global") {
+			std::cerr << "Error: --fdr requires --hi-mode global (planned as a follow-up for excl-focus/LOCO)\n";
+			return 2;
+		}
+		if (opt.fdr_sample <= 0) {
+			std::cerr << "Error: --fdr-sample must be > 0\n";
+			return 2;
+		}
+		if (opt.fdr_min_pairs <= 0) {
+			std::cerr << "Error: --fdr-min-pairs must be > 0\n";
+			return 2;
+		}
+		if (opt.fdr_lambda < 0.0 || opt.fdr_lambda >= 1.0) {
+			std::cerr << "Error: --fdr-lambda must be in [0, 1)\n";
+			return 2;
+		}
+		if (opt.distrib) {
+			std::cerr << "Error: --fdr does not yet support --distrib/--distrib-raw (planned as a follow-up)\n";
+			return 2;
+		}
 	}
 
 	return 0;
@@ -1114,6 +1180,11 @@ int main(int argc, char** argv) {
 	opt.use_asym = use_asym;
 	opt.min_neg_r = min_neg_r;
 	opt.min_pos_r = min_pos_r;
+	opt.use_fdr = cli.has_fdr;
+	opt.fdr_target = cli.fdr;
+	opt.fdr_sample = cli.fdr_sample;
+	opt.fdr_min_pairs = cli.fdr_min_pairs;
+	opt.fdr_lambda_cut = cli.fdr_lambda;
 
 	// Stage 11a: Sample-haplo scan overrides marker/marker scan
 	if (sample_haplo_mode) {
@@ -1197,11 +1268,19 @@ int main(int argc, char** argv) {
 
 	long long tested = 0;
 	long long kept = 0;
+	std::string fdr_summary_path;
 
 	std::cout << "Scan mode: " << (cli.intra ? "intrachromosomal" : "interchromosomal") << "\n";
 	std::cout << "Tile size: " << cli.tile_size << "\n";
 
-	if (cli.hi_mode == "global") {
+	if (cli.has_fdr) {
+		fdr_summary_path = cli.out + ".empirical_null.summary.tsv";
+		if (!scan_markers_write_hits_fdr(
+			Z, chroms, pos, markers_by_chr, chr_order,
+			opt, out_path, fdr_summary_path, tested, kept, cli.seed
+		))
+			return 1;
+	} else if (cli.hi_mode == "global") {
 		if (target_w >= 0) {
 			if (!scan_target_write_hits(
 				Z, chroms, pos, markers_by_chr, chr_order,
@@ -1255,14 +1334,21 @@ int main(int argc, char** argv) {
 
 	std::cout << "Scan complete:\n";
 	std::cout << "  tested_pairs = " << tested << "\n";
-	std::cout << "  kept_pairs   = " << kept << " (|r| >= " << cli.min_abs_r << ")\n";
+	if (cli.has_fdr)
+		std::cout << "  kept_pairs   = " << kept << " (qvalue <= " << cli.fdr << ")\n";
+	else
+		std::cout << "  kept_pairs   = " << kept << " (|r| >= " << cli.min_abs_r << ")\n";
 	std::cout << "  wrote        = " << out_path << "\n";
+	if (cli.has_fdr)
+		std::cout << "  wrote        = " << fdr_summary_path << "\n";
 	if (cli.distrib)
 		std::cout << "  wrote        = " << distrib_path << "\n";
 	if (cli.distrib_raw)
 		std::cout << "  wrote        = " << reservoir_path << "\n";
 
-	if (use_asym) {
+	if (cli.has_fdr) {
+		// no r-magnitude filter to report; hit calling is q-value driven
+	} else if (use_asym) {
 		std::cout << "  r filter    = ";
 		if (cli.has_min_neg_r)
 			std::cout << "r <= -" << min_neg_r << " ";

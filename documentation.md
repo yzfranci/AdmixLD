@@ -205,6 +205,30 @@ wA    chrA          posA      wB    chrB           posB      r           n
 0     scaffold-mi9  421750    636   scaffold-mi10  819774    0.125357    104
 ```
 
+When `--fdr` is used, five additional columns are appended (see [Empirical-Null FDR](#empirical-null-fdr)):
+
+| Column      | Description |
+|-------------|-------------|
+| `z`         | Fisher z-transform of `r` (`atanh(r)`) |
+| `zstar`     | `z` recalibrated against the block's fitted empirical null: `(z - mu0) / sigma0` |
+| `pvalue`    | One-sided p-value against the empirical null (tail-appropriate) |
+| `qvalue`    | Storey q-value; the primary hit-calling statistic (`--fdr` threshold) |
+| `local_fdr` | Efron local fdr; secondary per-pair ranking/confidence score |
+
+### Empirical-Null Summary — `<prefix>.empirical_null.summary.tsv`
+
+Written when `--fdr` is used. One row per chromosome-pair block.
+
+| Column        | Description |
+|---------------|-------------|
+| `chrA`, `chrB`| Chromosome pair |
+| `n_pairs`     | Exact number of pairs tested in this block |
+| `status`      | `ok` or `skipped` (block had fewer than `--fdr-min-pairs` pairs) |
+| `mu0`, `sigma0` | Fitted empirical-null location/scale (robust median/MAD of `z`) |
+| `lambda`      | Inflation factor vs. the theoretical null (`sigma0 * sqrt(n-3)`); ~1 means no inflation |
+| `pi0_pos`, `pi0_neg` | Storey's estimated proportion of true nulls, per tail |
+| `n_hits_pos`, `n_hits_neg` | Hits reported for each tail at the requested `--fdr` |
+
 ### Hybrid Index File — `<prefix>.hi.tsv`
 
 Written when HI is computed (always if not pre-supplied). Tab-separated.
@@ -265,6 +289,17 @@ This file is intended for empirical null calibration.
 | `--max-windows N` | all | Load at most N markers (useful for quick testing) |
 
 When either asymmetric filter (`--min-neg-r` or `--min-pos-r`) is set, `--min-abs-r` is ignored and a pair is kept if it satisfies either directional threshold.
+
+### Empirical-Null FDR
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--fdr FLOAT` | — | Target Storey q-value for hit calling; replaces `--min-abs-r`/`--min-neg-r`/`--min-pos-r` as the hit-calling rule. Interchromosomal + `--hi-mode global` only (see [Empirical-Null FDR](#empirical-null-fdr)) |
+| `--fdr-sample INT` | 200000 | Per-chromosome-pair-block reservoir size used to fit the empirical null |
+| `--fdr-min-pairs INT` | 500 | Minimum pairs in a block required to attempt calibration; smaller blocks are skipped (no hits) |
+| `--fdr-lambda FLOAT` | 0.5 | Storey pi0 tail-flatness cutoff |
+
+`--fdr` is mutually exclusive with `--min-abs-r`/`--min-neg-r`/`--min-pos-r`, and (in this phase) incompatible with `--intra`, `--target-chr`/`--target-pos`, `--sample-haplo`, `--hi-mode excl-focus`, and `--distrib`/`--distrib-raw`.
 
 ### Hybrid Index / Covariates
 
@@ -412,6 +447,28 @@ This prevents the focal chromosome's own ancestry signal from inflating its resi
 
 When used with `--ref-freq`, the same exclusion principle applies using the frequency-based components; see [Frequency-Based HI Computation](#frequency-based-hi-computation---ref-freq).
 
+### Empirical-Null FDR
+
+`--fdr` replaces the min-|r| hit-calling rule with an empirical-null recalibration and Storey q-value procedure, fitted independently per chromosome pair (interchromosomal scan only). This method was adopted after a permutation-based null was found to be invalid for structured hybrid zones: shuffling preserves per-individual confounds (population structure, shared genealogy) that are common to every marker, and row-permutation schemes intended to correct this are mathematically a no-op for the marker-marker Pearson correlation, since an identical row relabeling applied to both columns of a pair leaves their correlation unchanged.
+
+For each chromosome-pair block, AdmixLD makes two passes over the block's marker-pair correlation matrix (the same tiled computation as the standard scan, run twice):
+
+**Pass 1 — calibration.** Every pair's correlation is Fisher z-transformed (`z = atanh(r)`). A reservoir sample of up to `--fdr-sample` z-values is drawn uniformly from the block (unbiased, regardless of block size), alongside the exact pair count. From the reservoir:
+
+- The empirical null location and scale are estimated robustly: `mu0 = median(z)`, `sigma0 = 1.4826 * median(|z - mu0|)`.
+- `lambda = sigma0 * sqrt(n - 3)` reports the inflation of the fitted null relative to the theoretical null (`1/sqrt(n-3)`); `lambda ~= 1` means no excess background structure, `lambda >> 1` quantifies unmodeled confounding directly.
+- Each reservoir point is recalibrated to `zstar = (z - mu0) / sigma0`, converted to one-sided p-values `p_pos = 1 - Phi(zstar)` and `p_neg = Phi(zstar)` (recalibration is done **per tail** rather than pooled two-sided, since the fitted null is not always exactly symmetric around zero).
+- Storey's pi0 (proportion of true nulls) is estimated independently per tail from p-value tail flatness above `--fdr-lambda`, and Storey q-values are computed directly on the reservoir. Because the reservoir is an unbiased uniform subsample of the block, running the standard q-value procedure on it (as if it were the full dataset) is asymptotically equivalent to running it on every pair in the block — this is what keeps the method's memory footprint bounded regardless of block size.
+- The critical p-value/`zstar` threshold achieving the requested `--fdr` is recorded per tail.
+
+**Pass 2 — hit calling.** The block is rescanned; each pair's `zstar` is compared against the fitted per-tail thresholds. Pairs clearing either threshold are written to `<prefix>.hits.tsv` with `z`, `zstar`, `pvalue`, `qvalue` (the primary decision statistic — interpolated from pass 1's reservoir-derived q-value curve), and `local_fdr` (Efron's local false discovery rate, a secondary per-pair ranking/confidence score derived from a separate two-sided density-ratio pi0 estimate, since it answers a different question than the q-value — the posterior probability that *this specific pair* is null, rather than the expected proportion of false discoveries among all reported hits).
+
+A per-block calibration summary is written to `<prefix>.empirical_null.summary.tsv` (see [Empirical-Null Summary](#empirical-null-summary---prefixempirical_nullsummarytsv)).
+
+Blocks with fewer than `--fdr-min-pairs` pairs are skipped (marked `skipped` in the summary, no hits reported) since there is not enough data to calibrate a null reliably.
+
+**Caveats** (documented rather than solved away): the method assumes tests within a block are approximately independent/PRDS, which correlated LD pairs only approximate; and `mu0`/`sigma0` are estimated, not known, so the formal FDR guarantee does not account for that plug-in error. Intrachromosomal scans are not yet supported, since nearby markers on the same chromosome carry an additional confound (physical linkage / incomplete recombination) that contaminates the "mostly null" bulk assumption unless the null is also stratified by genetic distance — planned as a follow-up.
+
 ---
 
 ## Missing Data
@@ -442,3 +499,5 @@ Mean imputation is applied only when explicitly requested. This option is intend
 - **`--sample-haplo` values**: Non-missing values must be exactly 0 or 1. Any other value (including 0.5) is rejected at load time. Use missing-value tokens (`.`, `NA`) for samples without haplotype data.
 - **`--keep-indv` and residualization**: The sample filter is applied **after** residualization. HI estimation, LOCO component building, and residualization all use the full sample set to avoid biasing covariate estimation with a non-representative subset. Only the correlation scan uses the filtered subset.
 - **`--distrib-raw` and null calibration**: The reservoir sample is collected using reservoir sampling, so it is an unbiased random sample of all tested r values. When both `--distrib` and `--distrib-raw` are used, the summary quantiles and the raw sample are derived from the same reservoir.
+- **`--fdr` scope**: Currently interchromosomal only (`--intra`, `--target-chr`/`--target-pos`, `--sample-haplo`, and `--hi-mode excl-focus` are rejected in combination with `--fdr`). Intrachromosomal support requires stratifying the empirical null by genetic distance bin to avoid contaminating the null with physical-linkage LD, and is planned as a follow-up.
+- **`--fdr` runtime cost**: Because the empirical null must be fit from the block's own data before hits can be called, `--fdr` scans the correlation matrix twice per chromosome-pair block (once to calibrate, once to call hits) — roughly double the runtime of an equivalent `--min-abs-r` scan, with no increase in peak memory (the calibration reservoir is bounded by `--fdr-sample` per in-flight block).

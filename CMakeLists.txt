@@ -26,6 +26,7 @@ add_executable(admixld
 	src/core/residualize.cpp
 	src/core/scan_markers.cpp
 	src/core/scan_dynamic_hi.cpp
+	src/core/empirical_null.cpp
 )
 
 # HTSlib

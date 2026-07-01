@@ -22,6 +22,13 @@ struct ScanOptions {
 	int nsamples = 0;
 
 	int threads = 1;
+
+	// Empirical-null FDR hit calling (interchromosomal only, phase 1)
+	bool use_fdr = false;
+	double fdr_target = 0.01;
+	int fdr_sample = 200000;	// per-block reservoir size
+	long long fdr_min_pairs = 500;	// minimum block size to attempt calibration
+	double fdr_lambda_cut = 0.5;	// Storey pi0 tail cutoff
 };
 
 std::unordered_map<std::string, std::vector<int>> group_by_chr(
@@ -61,6 +68,25 @@ bool scan_markers_write_hits(
 	const std::string& reservoir_path = ""
 );
 
+
+// Interchromosomal-only empirical-null + Storey q-value FDR scan.
+// Two matmul passes per chromosome-pair block: pass 1 fits a per-block
+// empirical null from a reservoir sample of z=atanh(r); pass 2 applies the
+// resulting per-tail zstar thresholds and writes hits with z/zstar/pvalue/
+// qvalue/local_fdr columns. Requires opt.use_fdr; opt.intra must be false.
+bool scan_markers_write_hits_fdr(
+	const Eigen::MatrixXf& Z,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	const std::string& summary_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	uint64_t seed = 1
+);
 
 bool scan_target_write_hits(
 	const Eigen::MatrixXf& Z,
