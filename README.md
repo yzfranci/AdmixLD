@@ -118,6 +118,8 @@ Optional inputs:
 - **`--bed FILE`**: BED file of genomic intervals; only markers within these regions are retained.
 - **`--sample-haplo FILE`**: Per-sample mitochondrial haplotype TSV (values must be `0` or `1`); correlates the haplotype against all ancestry markers instead of running a pairwise scan.
 
+Hybrid index weighting defaults to **unweighted** for `--vcf` input and **weighted** for `--msp` input; override either way with `--unweighted-hi`/`--weighted-hi`.
+
 ---
 
 ## Usage examples
@@ -164,6 +166,16 @@ Optional inputs:
 	--chr scaffold-ma1 \
 	--chr scaffold-ma2
 
+# Intrachromosomal scan with empirical-null FDR: --min-dist drops
+# tightly-linked pairs before calibration, --fdr-intra-bins controls the
+# number of log-spaced distance bins used to stratify the null
+./build/admixld --vcf example_data_files/data.vcf.gz --out results \
+	--intra \
+	--fdr 0.01 \
+	--min-dist 10000000 \
+	--fdr-intra-bins 8 \
+	--chr scaffold-ma1
+
 # Compute hybrid index only and exit
 ./build/admixld --vcf data.vcf.gz --out results --compute-hi
 ```
@@ -177,9 +189,9 @@ Optional inputs:
 | `<prefix>.hi.tsv` | When HI is computed | Per-sample hybrid index |
 | `<prefix>.scan.summary.tsv` | `--distrib` | Empirical scan distribution summary (quantiles, mean, SD) |
 | `<prefix>.scan.summary.reservoir.tsv` | `--distrib-raw` | Raw reservoir sample of r values (single column `r`) |
-| `<prefix>.empirical_null.summary.tsv` | `--fdr` | Per-chromosome-pair empirical-null calibration summary (`mu0`, `sigma0`, `lambda`, `pi0`, hit counts) |
+| `<prefix>.empirical_null.summary.tsv` | `--fdr` | Per-block empirical-null calibration summary (`mu0`, `sigma0`, `lambda`, `pi0`, hit counts) — one row per chromosome pair, chromosome, or chromosome/distance-bin, depending on scan mode |
 
-The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n` — plus `z`, `zstar`, `pvalue`, `qvalue`, `local_fdr` when `--fdr` is used, in place of a fixed `--min-abs-r` threshold. See [documentation.md](documentation.md#empirical-null-fdr) for the method.
+The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n` — plus `z`, `zstar`, `pvalue`, `qvalue`, `local_fdr` when `--fdr` is used, in place of a fixed `--min-abs-r` threshold. `--fdr` works with `--intra`, `--target-chr`/`--target-pos`, `--sample-haplo`, and `--hi-mode excl-focus` (LOCO), including combinations of these. See [documentation.md](documentation.md#empirical-null-fdr) for the method.
 
 See [documentation.md](documentation.md) for the full flag reference, file format specifications, and method details.
 

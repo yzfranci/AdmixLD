@@ -217,7 +217,8 @@ HiComponentsWeighted build_hi_components_weighted(
 	const std::vector<std::string>& chroms,
 	const std::vector<int>& pos,
 	bool pos_is_start,
-	const std::vector<int>& pos_start
+	const std::vector<int>& pos_start,
+	bool unweighted
 ) {
 	const int nsamples = (int)X.rows();
 	const int nwin = (int)X.cols();
@@ -255,9 +256,9 @@ HiComponentsWeighted build_hi_components_weighted(
 		hc.wtot_chr[(size_t)c] = Eigen::VectorXf::Zero(nsamples);
 	}
 
-	// Weights per window (tract lengths)
+	// Weights per window (tract lengths, or 1.0 for every marker if unweighted)
 	std::vector<float> wlen((size_t)nwin, 1.0f);
-	if ((int)chroms.size() == nwin && (int)pos.size() == nwin) {
+	if (!unweighted && (int)chroms.size() == nwin && (int)pos.size() == nwin) {
 		wlen = (!pos_start.empty() && (int)pos_start.size() == nwin)
 			? compute_tract_lengths_from_range_msp(pos_start, pos)
 			: infer_tract_lengths(chroms, pos, pos_is_start);

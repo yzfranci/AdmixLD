@@ -49,12 +49,14 @@ static void usage() {
 		<< "  --intra                Scan intrachromosomal pairs (default: interchrom only)\n"
 		<< "  --phased               Use phased haplotypes (2n rows); requires --intra; MSP/VCF GT only\n"
 		<< "  --max-dist INT         Intra only: max end-distance (bp) between marker pairs\n"
+		<< "  --min-dist INT         Intra only: min end-distance (bp) between marker pairs\n"
 		<< "  --max-windows N        Load at most N markers from the VCF (used solely for test runs and debugging)\n"
 		<< "  --min-callrate FLOAT   Minimum marker call rate; values <1.0 enable per-marker mean imputation (beta; might introduce bias).\n"
 		<< "  --cov FILE             External HI file (TSV: sample<TAB>hi; single column only; header optional); overrides computed HI\n"
 		<< "  --hi-mode STR          HI correction: global (default) | excl-focus (LOCO/LOCO2; incompatible with --cov)\n"
 		<< "  --compute-hi           Compute HI using FILTERED markers only, write out.hi.tsv, and exit (ignored with --cov)\n"
-		<< "  --unweighted-hi        Use unweighted HI (mean(dosage)/2; legacy behavior; ignored with --cov)\n"
+		<< "  --unweighted-hi        Use unweighted HI (mean(dosage)/2); default with --vcf, ignored with --cov\n"
+		<< "  --weighted-hi          Use length-weighted HI; default with --msp, ignored with --cov\n"
 		<< "  --pos-is-start         For weighted HI: interpret VCF marker pos as START (ignored with --cov)\n"
 		<< "  --tile-size INT		 tile size for processing (default: 1024)\n"
 		<< "  --threads INT          Number of OpenMP threads for scan steps (default: 1)\n"
@@ -69,10 +71,11 @@ static void usage() {
 		<< "  --target-pos INT       Scan one target marker/pos vs all others (target position; matches single position)\n"
 		<< "  --ref-freq FILE        Parental allele frequency file (TSV: chrom pos p1 p2); VCF only\n"
 	<< "  --min-delta-afd FLOAT  Min |p1-p2| for --ref-freq markers (default: 0; dropped if below)\n"
-	<< "  --fdr FLOAT            Empirical-null + Storey q-value hit calling (target q-value); interchromosomal + --hi-mode global only; replaces --min-abs-r/--min-neg-r/--min-pos-r\n"
-	<< "  --fdr-sample INT       Per-chromosome-pair reservoir size for empirical-null calibration (default: 200000)\n"
-	<< "  --fdr-min-pairs INT    Minimum pairs in a chromosome-pair block to attempt calibration (default: 500)\n"
+	<< "  --fdr FLOAT            Empirical-null + Storey q-value hit calling (target q-value); replaces --min-abs-r/--min-neg-r/--min-pos-r; --intra supported (additive for --target-*, ignored for --sample-haplo)\n"
+	<< "  --fdr-sample INT       Per-block reservoir size for empirical-null calibration (default: 200000)\n"
+	<< "  --fdr-min-pairs INT    Minimum pairs in a block to attempt calibration (default: 500)\n"
 	<< "  --fdr-lambda FLOAT     Storey pi0 tail cutoff (default: 0.5)\n"
+	<< "  --fdr-intra-bins INT   --fdr --intra only: number of log-spaced distance bins per chromosome (default: 8)\n"
 	<< "  --sample-haplo FILE    Per-sample mitochondrial haplotype TSV: sample<TAB>value (0 or 1 only; missing allowed)\n"
 	<< "  --keep-indv FILE       Keep only samples listed in FILE (one ID per line)\n";
 }
@@ -100,12 +103,16 @@ struct CliOptions {
 	std::string hi_mode = "global";	// global | excl-focus
 
 	bool compute_hi_only = false;
-	bool unweighted_hi = false;
+	bool unweighted_hi = false;	// resolved post-parse: unweighted by default for --vcf, weighted by default for --msp (see resolve_unweighted_hi_default)
+	bool has_unweighted_hi = false;	// true if --unweighted-hi or --weighted-hi was explicitly passed
+	bool saw_both_hi_weight_flags = false;	// true if both --unweighted-hi and --weighted-hi were passed
 	bool pos_is_start = false;
 
 	bool intra = false;
 	bool phased = false;
 	int max_dist = -1;
+	int min_dist = -1;
+	bool has_min_dist = false;
 	int max_windows = -1;	// <=0 means loader default cap
 	double min_callrate = 1.0;	// fraction in [0,1]
 
@@ -129,6 +136,7 @@ struct CliOptions {
 	int fdr_sample = 200000;
 	long long fdr_min_pairs = 500;
 	double fdr_lambda = 0.5;
+	int fdr_intra_bins = 8;
 };
 
 static bool parse_args(int argc, char** argv, CliOptions& opt) {
@@ -160,6 +168,10 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--max-dist" && i + 1 < argc) {
 			opt.max_dist = std::stoi(argv[++i]);
 
+		} else if (a == "--min-dist" && i + 1 < argc) {
+			opt.min_dist = std::stoi(argv[++i]);
+			opt.has_min_dist = true;
+
 		} else if (a == "--max-windows" && i + 1 < argc) {
 			opt.max_windows = std::stoi(argv[++i]);
 
@@ -176,7 +188,16 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 			opt.compute_hi_only = true;
 
 		} else if (a == "--unweighted-hi") {
+			if (opt.has_unweighted_hi && !opt.unweighted_hi)
+				opt.saw_both_hi_weight_flags = true;
 			opt.unweighted_hi = true;
+			opt.has_unweighted_hi = true;
+
+		} else if (a == "--weighted-hi") {
+			if (opt.has_unweighted_hi && opt.unweighted_hi)
+				opt.saw_both_hi_weight_flags = true;
+			opt.unweighted_hi = false;
+			opt.has_unweighted_hi = true;
 
 		} else if (a == "--pos-is-start") {
 			opt.pos_is_start = true;
@@ -250,6 +271,9 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--fdr-lambda" && i + 1 < argc) {
 			opt.fdr_lambda = std::stod(argv[++i]);
 
+		} else if (a == "--fdr-intra-bins" && i + 1 < argc) {
+			opt.fdr_intra_bins = std::stoi(argv[++i]);
+
 		} else {
 			std::cerr << "Unknown/invalid arg: " << a << "\n";
 			usage();
@@ -259,10 +283,22 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 	return true;
 }
 
+// Default: unweighted for --vcf, weighted for --msp; skipped if explicitly set.
+static void resolve_hi_weighting_default(CliOptions& opt) {
+	if (opt.has_unweighted_hi)
+		return;
+	opt.unweighted_hi = !opt.vcf_path.empty();
+}
+
 static int validate_options(const CliOptions& opt) {
 	if (opt.vcf_path.empty() == opt.msp_path.empty()) {
 		std::cerr << "Error: exactly one of --vcf or --msp is required.\n";
 		usage();
+		return 2;
+	}
+
+	if (opt.saw_both_hi_weight_flags) {
+		std::cerr << "Error: --unweighted-hi and --weighted-hi are mutually exclusive\n";
 		return 2;
 	}
 
@@ -305,8 +341,8 @@ static int validate_options(const CliOptions& opt) {
 	if (!opt.cov_path.empty()) {
 		if (opt.compute_hi_only)
 			std::cerr << "Warning: --compute-hi is ignored when --cov is provided\n";
-		if (opt.unweighted_hi)
-			std::cerr << "Warning: --unweighted-hi is ignored when --cov is provided\n";
+		if (opt.has_unweighted_hi)
+			std::cerr << "Warning: --unweighted-hi/--weighted-hi is ignored when --cov is provided\n";
 		if (opt.pos_is_start)
 			std::cerr << "Warning: --pos-is-start is ignored when --cov is provided\n";
 	}
@@ -338,6 +374,19 @@ static int validate_options(const CliOptions& opt) {
 		return 2;
 	}
 
+	if (opt.has_min_dist) {
+		if (opt.min_dist < 0) {
+			std::cerr << "Error: --min-dist must be >= 0\n";
+			return 2;
+		}
+		if (opt.max_dist >= 0 && opt.min_dist > opt.max_dist) {
+			std::cerr << "Error: --min-dist must be <= --max-dist\n";
+			return 2;
+		}
+		if (!opt.intra)
+			std::cerr << "Warning: --min-dist is ignored without --intra\n";
+	}
+
 	if (opt.has_fdr) {
 		if (opt.fdr <= 0.0 || opt.fdr >= 1.0) {
 			std::cerr << "Error: --fdr must be in (0, 1)\n";
@@ -348,20 +397,19 @@ static int validate_options(const CliOptions& opt) {
 			return 2;
 		}
 		if (opt.intra) {
-			std::cerr << "Error: --fdr does not yet support --intra (interchromosomal only; planned as a follow-up)\n";
-			return 2;
-		}
-		if (opt.has_target) {
-			std::cerr << "Error: --fdr does not yet support --target-chr/--target-pos (planned as a follow-up)\n";
-			return 2;
-		}
-		if (!opt.sample_haplo_path.empty()) {
-			std::cerr << "Error: --fdr does not yet support --sample-haplo (planned as a follow-up)\n";
-			return 2;
-		}
-		if (opt.hi_mode != "global") {
-			std::cerr << "Error: --fdr requires --hi-mode global (planned as a follow-up for excl-focus/LOCO)\n";
-			return 2;
+			if (!opt.has_min_dist) {
+				std::cerr << "Warning: --fdr --intra without --min-dist: the closest distance bin will include "
+				             "tightly-linked pairs, which may bias its own calibration. Consider setting --min-dist.\n";
+			}
+			if (opt.fdr_intra_bins < 1) {
+				std::cerr << "Error: --fdr-intra-bins must be >= 1\n";
+				return 2;
+			}
+			if (opt.has_target && opt.distrib) {
+				std::cerr << "Warning: --distrib with --target-* --intra --fdr only reflects the interchromosomal "
+				             "portion of the scan (the intrachromosomal distance bins are not included in the "
+				             "distribution summary/reservoir).\n";
+			}
 		}
 		if (opt.fdr_sample <= 0) {
 			std::cerr << "Error: --fdr-sample must be > 0\n";
@@ -373,10 +421,6 @@ static int validate_options(const CliOptions& opt) {
 		}
 		if (opt.fdr_lambda < 0.0 || opt.fdr_lambda >= 1.0) {
 			std::cerr << "Error: --fdr-lambda must be in [0, 1)\n";
-			return 2;
-		}
-		if (opt.distrib) {
-			std::cerr << "Error: --fdr does not yet support --distrib/--distrib-raw (planned as a follow-up)\n";
 			return 2;
 		}
 	}
@@ -747,18 +791,13 @@ static bool build_hi_components_if_needed(
 	if (opt.hi_mode != "excl-focus")
 		return true;
 
-	// excl-focus requires weighted components so we can subtract focus-chrom contributions on the fly.
-	if (opt.unweighted_hi) {
-		std::cerr << "Error: --hi-mode excl-focus currently requires weighted HI (omit --unweighted-hi)\n";
-		return false;
-	}
-
 	hc_full = build_hi_components_weighted(
 		X_full,
 		chroms_full,
 		pos_full,
 		opt.pos_is_start,
-		pos_start_full
+		pos_start_full,
+		opt.unweighted_hi
 	);
 	has_hc_full = true;
 	return true;
@@ -898,8 +937,16 @@ int main(int argc, char** argv) {
 	if (!parse_args(argc, argv, cli))
 		return 2;
 
+	resolve_hi_weighting_default(cli);
+
 	if (int rc = validate_options(cli); rc != 0)
 		return rc;
+
+	if (!cli.has_unweighted_hi && cli.cov_path.empty()) {
+		std::cout << "Note: HI weighting defaulted to " << (cli.unweighted_hi ? "unweighted" : "weighted")
+			<< " for " << (cli.vcf_path.empty() ? "--msp" : "--vcf") << " input"
+			<< " (use --unweighted-hi/--weighted-hi to override)\n";
+	}
 
 	const bool sample_haplo_mode = !cli.sample_haplo_path.empty();
 	if (sample_haplo_mode && cli.intra)
@@ -1088,10 +1135,6 @@ int main(int argc, char** argv) {
 	bool has_hc_full = false;
 
 	if (cli.hi_mode == "excl-focus") {
-		if (cli.unweighted_hi && !use_ref_freq) {
-			std::cerr << "Error: --hi-mode excl-focus currently requires weighted HI (omit --unweighted-hi)\n";
-			return 2;
-		}
 		if (use_ref_freq) {
 			hc_freq_full = build_hi_components_freq(
 				X_full, freqs_full, chroms_full, pos_full, cli.pos_is_start, pos_start_full
@@ -1173,6 +1216,7 @@ int main(int argc, char** argv) {
 	ScanOptions opt;
 	opt.intra = cli.intra;
 	opt.max_dist = cli.max_dist;
+	opt.min_dist = cli.min_dist;
 	opt.tile_size = cli.tile_size;
 	opt.nsamples = (int)Z.rows();
 	opt.threads = cli.threads;
@@ -1185,6 +1229,7 @@ int main(int argc, char** argv) {
 	opt.fdr_sample = cli.fdr_sample;
 	opt.fdr_min_pairs = cli.fdr_min_pairs;
 	opt.fdr_lambda_cut = cli.fdr_lambda;
+	opt.fdr_intra_bins = cli.fdr_intra_bins;
 
 	// Stage 11a: Sample-haplo scan overrides marker/marker scan
 	if (sample_haplo_mode) {
@@ -1198,10 +1243,59 @@ int main(int argc, char** argv) {
 
 		long long tested = 0;
 		long long kept = 0;
+		std::string fdr_summary_path;
 
 		std::cout << "Scan mode: sample-haplo vs all markers\n";
 
-		if (cli.hi_mode == "global") {
+		if (cli.has_fdr) {
+			fdr_summary_path = cli.out + ".samplehaplo.empirical_null.summary.tsv";
+
+			if (cli.hi_mode == "global") {
+				if (!scan_vector_vs_windows_write_hits_fdr(
+					Z, gZ,
+					chroms, pos,
+					markers_by_chr, chr_order,
+					opt,
+					out_path,
+					fdr_summary_path,
+					tested,
+					kept,
+					cli.seed,
+					distrib_path,
+					cli.distrib_sample,
+					cli.seed,
+					reservoir_path
+				))
+					return 1;
+			} else {
+				if (!g_loaded) {
+					std::cerr << "Error: sample-haplo vector was not loaded\n";
+					return 1;
+				}
+				if (!has_hc_full) {
+					std::cerr << "Error: HI components missing for excl-focus mode\n";
+					return 1;
+				}
+
+				bool scan_ok;
+				if (use_ref_freq) {
+					scan_ok = scan_vector_vs_windows_write_hits_excl_focus_fdr(
+						X, g, chroms, pos, markers_by_chr, chr_order,
+						hc_freq_full, opt, out_path, fdr_summary_path, tested, kept,
+						freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					);
+				} else {
+					scan_ok = scan_vector_vs_windows_write_hits_excl_focus_fdr(
+						X, g, chroms, pos, markers_by_chr, chr_order,
+						hc_full, opt, out_path, fdr_summary_path, tested, kept, cli.seed,
+						distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					);
+				}
+				if (!scan_ok)
+					return 1;
+			}
+
+		} else if (cli.hi_mode == "global") {
 			if (!scan_vector_vs_windows_write_hits(
 				Z, gZ,
 				chroms, pos,
@@ -1249,6 +1343,8 @@ int main(int argc, char** argv) {
 		std::cout << "  tested_pairs = " << tested << "\n";
 		std::cout << "  kept_pairs   = " << kept << "\n";
 		std::cout << "  wrote        = " << out_path << "\n";
+		if (cli.has_fdr)
+			std::cout << "  wrote        = " << fdr_summary_path << "\n";
 		if (cli.distrib)
 			std::cout << "  wrote        = " << distrib_path << "\n";
 		if (cli.distrib_raw)
@@ -1275,11 +1371,53 @@ int main(int argc, char** argv) {
 
 	if (cli.has_fdr) {
 		fdr_summary_path = cli.out + ".empirical_null.summary.tsv";
-		if (!scan_markers_write_hits_fdr(
-			Z, chroms, pos, markers_by_chr, chr_order,
-			opt, out_path, fdr_summary_path, tested, kept, cli.seed
-		))
-			return 1;
+		if (target_w >= 0 && cli.hi_mode == "global") {
+			if (!scan_target_write_hits_fdr(
+				Z, chroms, pos, markers_by_chr, chr_order,
+				opt, target_w, out_path, fdr_summary_path, tested, kept, cli.seed,
+				distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+			))
+				return 1;
+		} else if (target_w >= 0) {
+			bool scan_ok;
+			if (use_ref_freq) {
+				scan_ok = scan_target_write_hits_excl_focus_fdr(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_freq_full, opt, target_w, out_path, fdr_summary_path, tested, kept,
+					freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+				);
+			} else {
+				scan_ok = scan_target_write_hits_excl_focus_fdr(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_full, opt, target_w, out_path, fdr_summary_path, tested, kept, cli.seed,
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+				);
+			}
+			if (!scan_ok) return 1;
+		} else if (cli.hi_mode == "global") {
+			if (!scan_markers_write_hits_fdr(
+				Z, chroms, pos, markers_by_chr, chr_order,
+				opt, out_path, fdr_summary_path, tested, kept, cli.seed,
+				distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+			))
+				return 1;
+		} else {
+			bool scan_ok;
+			if (use_ref_freq) {
+				scan_ok = scan_markers_write_hits_excl_focus_fdr(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_freq_full, opt, out_path, fdr_summary_path, tested, kept,
+					freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+				);
+			} else {
+				scan_ok = scan_markers_write_hits_excl_focus_fdr(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_full, opt, out_path, fdr_summary_path, tested, kept, cli.seed,
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+				);
+			}
+			if (!scan_ok) return 1;
+		}
 	} else if (cli.hi_mode == "global") {
 		if (target_w >= 0) {
 			if (!scan_target_write_hits(

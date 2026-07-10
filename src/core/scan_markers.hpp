@@ -9,6 +9,7 @@
 struct ScanOptions {
 	bool intra = false;
 	int max_dist = -1;
+	int min_dist = -1;	// intra only; -1 = no floor
 	int tile_size = 1024;
 
 	// legacy symmetric filter
@@ -23,12 +24,13 @@ struct ScanOptions {
 
 	int threads = 1;
 
-	// Empirical-null FDR hit calling (interchromosomal only, phase 1)
+	// Empirical-null FDR hit calling
 	bool use_fdr = false;
 	double fdr_target = 0.01;
 	int fdr_sample = 200000;	// per-block reservoir size
 	long long fdr_min_pairs = 500;	// minimum block size to attempt calibration
 	double fdr_lambda_cut = 0.5;	// Storey pi0 tail cutoff
+	int fdr_intra_bins = 8;	// --intra only: log-spaced distance bins per chromosome
 };
 
 std::unordered_map<std::string, std::vector<int>> group_by_chr(
@@ -69,11 +71,9 @@ bool scan_markers_write_hits(
 );
 
 
-// Interchromosomal-only empirical-null + Storey q-value FDR scan.
-// Two matmul passes per chromosome-pair block: pass 1 fits a per-block
-// empirical null from a reservoir sample of z=atanh(r); pass 2 applies the
-// resulting per-tail zstar thresholds and writes hits with z/zstar/pvalue/
-// qvalue/local_fdr columns. Requires opt.use_fdr; opt.intra must be false.
+// Two passes per chromosome-pair block: pass 1 fits a per-block empirical
+// null from a reservoir sample of z=atanh(r); pass 2 applies the resulting
+// zstar thresholds and writes hits. Requires opt.use_fdr; opt.intra must be false.
 bool scan_markers_write_hits_fdr(
 	const Eigen::MatrixXf& Z,
 	const std::vector<std::string>& chroms,
@@ -85,7 +85,11 @@ bool scan_markers_write_hits_fdr(
 	const std::string& summary_path,
 	long long& tested_pairs,
 	long long& kept_pairs,
-	uint64_t seed = 1
+	uint64_t seed = 1,
+	const std::string& distrib_path = "",
+	int distrib_sample = 200000,
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
 );
 
 bool scan_target_write_hits(
@@ -116,6 +120,49 @@ bool scan_vector_vs_windows_write_hits(
 	const std::string& out_path,
 	long long& tested_pairs,
 	long long& kept_pairs,
+	const std::string& distrib_path = "",
+	int distrib_sample = 200000,
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
+);
+
+// One calibration+hit-calling pass per chromosome in chr_order, each tested
+// against target_w. target_w's own chromosome is skipped.
+bool scan_target_write_hits_fdr(
+	const Eigen::MatrixXf& Z,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
+	const ScanOptions& opt,
+	int target_w,
+	const std::string& out_path,
+	const std::string& summary_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	uint64_t seed = 1,
+	const std::string& distrib_path = "",
+	int distrib_sample = 200000,
+	uint64_t distrib_seed = 1,
+	const std::string& reservoir_path = ""
+);
+
+// Same as scan_target_write_hits_fdr, but for a sample-level vector (e.g.
+// --sample-haplo) that isn't tied to any single chromosome, so every
+// chromosome in chr_order is tested (no self-chromosome to skip).
+bool scan_vector_vs_windows_write_hits_fdr(
+	const Eigen::MatrixXf& Z,
+	const Eigen::VectorXf& v,
+	const std::vector<std::string>& chroms,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& windows_by_chr,
+	const std::vector<std::string>& chr_order,
+	const ScanOptions& opt,
+	const std::string& out_path,
+	const std::string& summary_path,
+	long long& tested_pairs,
+	long long& kept_pairs,
+	uint64_t seed = 1,
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
