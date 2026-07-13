@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use AdmixLD, please cite the following paper."
 type: software
 title: "AdmixLD: Fast genome-scale inference of ancestry disequilibrium in hybrid zones"
-version: 0.9.1
+version: 0.10.1
 license: MIT
 repository-code: https://github.com/yzfranci/AdmixLD
 authors:

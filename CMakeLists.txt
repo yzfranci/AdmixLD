@@ -8,9 +8,12 @@ if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# HTSlib via pkg-config
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(HTS REQUIRED htslib)
+# HTSlib
+find_path(HTS_INCLUDE_DIR NAMES htslib/sam.h)
+find_library(HTS_LIBRARY NAMES hts)
+if(NOT HTS_INCLUDE_DIR OR NOT HTS_LIBRARY)
+	message(FATAL_ERROR "htslib not found (need htslib/sam.h and libhts)")
+endif()
 
 # Eigen
 find_package(Eigen3 REQUIRED)
@@ -30,10 +33,8 @@ add_executable(admixld
 )
 
 # HTSlib
-target_include_directories(admixld PRIVATE ${HTS_INCLUDE_DIRS})
-target_link_directories(admixld PRIVATE ${HTS_LIBRARY_DIRS})
-target_link_libraries(admixld PRIVATE ${HTS_LIBRARIES})
-target_compile_options(admixld PRIVATE ${HTS_CFLAGS_OTHER})
+target_include_directories(admixld PRIVATE ${HTS_INCLUDE_DIR})
+target_link_libraries(admixld PRIVATE ${HTS_LIBRARY})
 
 # Eigen
 target_link_libraries(admixld PRIVATE Eigen3::Eigen)

@@ -1,4 +1,4 @@
-{% set version = "0.9.1" %}
+{% set version = "0.10.1" %}
 
 package:
   name: admixld
@@ -10,13 +10,15 @@ source:
 
 build:
   number: 0
+  run_exports:
+    - {{ pin_subpackage('admixld', max_pin="x.x") }}
 
 requirements:
   build:
     - {{ compiler('cxx') }}
+    - {{ stdlib('c') }}
     - cmake >=3.16
     - make
-    - pkg-config
   host:
     - htslib
     - eigen
