@@ -453,7 +453,11 @@ In leave-one-chromosome-out (LOCO) mode, the HI used to residualize markers on c
 
 $$\text{HI}^{-c}_i = \frac{\sum_{j \notin c} d_{ij} L_j}{2 \sum_{j \notin c} L_j}$$
 
-With **unweighted HI** (`--unweighted-hi`), the same exclusion is applied with $L_j = 1$ for every marker, i.e. $\text{HI}^{-c}_i = \frac{1}{2 n_{-c}} \sum_{j \notin c} d_{ij}$ where $n_{-c}$ is the marker count outside chromosome $c$.
+With **unweighted HI** (`--unweighted-hi`), the same exclusion is applied with $L_j = 1$ for every marker:
+
+$$\text{HI}^{-c}_i = \frac{1}{2 n_{-c}} \sum_{j \notin c} d_{ij}$$
+
+where $n_{-c}$ is the marker count outside chromosome $c$.
 
 This prevents the focal chromosome's own ancestry signal from inflating its residuals, which would suppress true signals on that chromosome while producing artifactual correlations between it and others. LOCO mode is recommended when the data contain strong chromosomal-scale ancestry tracts.
 
