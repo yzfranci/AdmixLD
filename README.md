@@ -196,4 +196,7 @@ The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n` 
 See [documentation.md](documentation.md) for the full flag reference, file format specifications, and method details.
 
 ## Citation
-TO BE COMPLETED
+
+If you use AdmixLD, please cite:
+
+Francioli YZ, Adams RH, Ballard K, Gompert Z, Castoe TA. AdmixLD: Fast genome-scale inference of ancestry disequilibrium in hybrid zones. *Bioinformatics*. 2026. doi: [10.1093/bioinformatics/btag633](https://doi.org/10.1093/bioinformatics/btag633)
