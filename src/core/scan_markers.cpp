@@ -56,6 +56,92 @@ static float quantile_from_sorted(
 	return (float)((1.0 - t) * v[i0] + t * v[i1]);
 }
 
+// Writes one --distrib-chr-pairs summary row (the same 14 stat columns as
+// --distrib's global summary) for a single chromosome-pair/chromosome block.
+// Caller writes the block's key column(s) (chrA/chrB, or chr) before calling.
+static void write_distrib_block_stats(
+	std::ostream& out,
+	std::vector<float>& sample,
+	long long tested,
+	float min_r,
+	float max_r
+) {
+	if (tested == 0 || sample.empty()) {
+		out << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+		return;
+	}
+
+	double mu = 0.0, m2_acc = 0.0, mu_r2 = 0.0, m2_r2 = 0.0;
+	long long n = 0;
+	for (float x : sample) {
+		if (!std::isfinite(x))
+			continue;
+		++n;
+		double dx = (double)x - mu;
+		mu += dx / (double)n;
+		m2_acc += dx * ((double)x - mu);
+		double r2 = (double)x * (double)x;
+		double dr2 = r2 - mu_r2;
+		mu_r2 += dr2 / (double)n;
+		m2_r2 += dr2 * (r2 - mu_r2);
+	}
+
+	float mean = (n > 0) ? (float)mu : std::numeric_limits<float>::quiet_NaN();
+	float sd = (n > 1) ? (float)std::sqrt(m2_acc / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+	float mean_r2 = (n > 0) ? (float)mu_r2 : std::numeric_limits<float>::quiet_NaN();
+	float sd_r2 = (n > 1) ? (float)std::sqrt(m2_r2 / (double)(n - 1)) : std::numeric_limits<float>::quiet_NaN();
+
+	std::sort(sample.begin(), sample.end());
+
+	out << tested
+		<< "\t" << max_r
+		<< "\t" << quantile_from_sorted(sample, 0.99)
+		<< "\t" << quantile_from_sorted(sample, 0.95)
+		<< "\t" << quantile_from_sorted(sample, 0.75)
+		<< "\t" << quantile_from_sorted(sample, 0.50)
+		<< "\t" << quantile_from_sorted(sample, 0.25)
+		<< "\t" << quantile_from_sorted(sample, 0.05)
+		<< "\t" << quantile_from_sorted(sample, 0.01)
+		<< "\t" << min_r
+		<< "\t" << mean
+		<< "\t" << sd
+		<< "\t" << mean_r2
+		<< "\t" << sd_r2
+		<< "\n";
+}
+
+// Per-block (chromosome-pair, or single chromosome) accumulator for
+// --distrib-chr-pairs, mirroring the per-thread ThreadDistrib used for the
+// global --distrib aggregate but scoped to one block and flushed immediately.
+struct BlockDistrib {
+	long long tested_pairs = 0;
+	float min_r = std::numeric_limits<float>::infinity();
+	float max_r = -std::numeric_limits<float>::infinity();
+	std::mt19937_64 rng;
+	std::vector<float> sample;
+};
+
+static void block_distrib_init(BlockDistrib& d, uint64_t distrib_seed, uint64_t block_salt, int distrib_sample) {
+	d.rng = std::mt19937_64(distrib_seed ^ 0xD1DB1000000ULL ^ block_salt);
+	d.sample.reserve((size_t)distrib_sample);
+}
+
+static void block_distrib_consider(BlockDistrib& d, float r, int distrib_sample) {
+	if (r < d.min_r) d.min_r = r;
+	if (r > d.max_r) d.max_r = r;
+
+	++d.tested_pairs;
+
+	if ((int)d.sample.size() < distrib_sample) {
+		d.sample.push_back(r);
+	} else {
+		std::uniform_int_distribution<long long> U(0, d.tested_pairs - 1);
+		long long j = U(d.rng);
+		if (j < distrib_sample)
+			d.sample[(size_t)j] = r;
+	}
+}
+
 bool scan_markers_write_hits(
 	const Eigen::MatrixXf& Z,
 	const std::vector<std::string>& chroms,
@@ -69,7 +155,8 @@ bool scan_markers_write_hits(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	const int nsamples = opt.nsamples;
 	const int tile_size = opt.tile_size;
@@ -86,6 +173,8 @@ bool scan_markers_write_hits(
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
+
 	int nthreads = 1;
 	#ifdef ADMIXLD_HAS_OPENMP
 		nthreads = opt.threads;
@@ -97,6 +186,14 @@ bool scan_markers_write_hits(
 	for (int t = 0; t < nthreads; ++t) {
 		part_paths[(size_t)t] = out_path + ".part." + std::to_string(t);
 		std::remove(part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	// Per-thread counters
@@ -325,6 +422,10 @@ bool scan_markers_write_hits(
 				}
 			};
 
+			BlockDistrib pd;
+			if (do_distrib_pairs)
+				block_distrib_init(pd, distrib_seed, (uint64_t)j, distrib_sample);
+
 			for (int i0 = 0; i0 < m1; i0 += tile_size) {
 				const int b1 = std::min(tile_size, m1 - i0);
 
@@ -348,6 +449,8 @@ bool scan_markers_write_hits(
 
 							++tested_local;
 							consider_distrib(r);
+							if (do_distrib_pairs)
+								block_distrib_consider(pd, r, distrib_sample);
 
 							if (keep_hit(r)) {
 								ofp << a << "\t" << chroms[a] << "\t" << pos[a] << "\t"
@@ -357,6 +460,14 @@ bool scan_markers_write_hits(
 							}
 						}
 					}
+				}
+			}
+
+			if (do_distrib_pairs) {
+				std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+				if (dpfp) {
+					dpfp << chr1 << "\t" << chr2 << "\t";
+					write_distrib_block_stats(dpfp, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
 				}
 			}
 
@@ -395,6 +506,29 @@ bool scan_markers_write_hits(
 	// Cleanup part files
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		std::ofstream of(distrib_chr_pairs_path);
+		if (!of) {
+			std::cerr << "Error: cannot write to " << distrib_chr_pairs_path << "\n";
+			return false;
+		}
+
+		of << "chrA\tchrB\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
+
+		for (int t = 0; t < nthreads; ++t) {
+			std::ifstream pf(distrib_pairs_part_paths[(size_t)t]);
+			if (!pf)
+				continue;
+
+			std::string line;
+			while (std::getline(pf, line))
+				of << line << "\n";
+		}
+
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	// Write distrib summary and/or reservoir
 	if (do_distrib) {
@@ -936,7 +1070,8 @@ bool scan_markers_write_hits_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	if (opt.intra) {
 		return scan_markers_write_hits_fdr_intra(
@@ -964,6 +1099,8 @@ bool scan_markers_write_hits_fdr(
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
+
 	int nthreads = 1;
 	#ifdef ADMIXLD_HAS_OPENMP
 		nthreads = opt.threads;
@@ -977,6 +1114,14 @@ bool scan_markers_write_hits_fdr(
 		summary_part_paths[(size_t)t] = summary_path + ".part." + std::to_string(t);
 		std::remove(hit_part_paths[(size_t)t].c_str());
 		std::remove(summary_part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -1078,6 +1223,10 @@ bool scan_markers_write_hits_fdr(
 		reservoir.reserve((size_t)rsample);
 		auto& rng = rngs[(size_t)tid];
 
+		BlockDistrib pd;
+		if (do_distrib_pairs)
+			block_distrib_init(pd, distrib_seed, (uint64_t)j, distrib_sample);
+
 		for_each_pair([&](int, int, float r) {
 			++m_local;
 			float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
@@ -1108,6 +1257,9 @@ bool scan_markers_write_hits_fdr(
 						d.sample[(size_t)jd] = r;
 				}
 			}
+
+			if (do_distrib_pairs)
+				block_distrib_consider(pd, r, distrib_sample);
 		});
 
 		NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
@@ -1147,6 +1299,14 @@ bool scan_markers_write_hits_fdr(
 			<< fit.mu0 << "\t" << fit.sigma0 << "\t" << fit.lambda << "\t"
 			<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
 			<< hits_pos << "\t" << hits_neg << "\n";
+
+		if (do_distrib_pairs) {
+			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (dpfp) {
+				dpfp << chr1 << "\t" << chr2 << "\t";
+				write_distrib_block_stats(dpfp, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
+			}
+		}
 
 		tested_t[(size_t)tid] += m_local;
 		kept_t[(size_t)tid] += kept_local;
@@ -1194,6 +1354,29 @@ bool scan_markers_write_hits_fdr(
 	}
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(summary_part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		std::ofstream of(distrib_chr_pairs_path);
+		if (!of) {
+			std::cerr << "Error: cannot write to " << distrib_chr_pairs_path << "\n";
+			return false;
+		}
+
+		of << "chrA\tchrB\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
+
+		for (int t = 0; t < nthreads; ++t) {
+			std::ifstream pf(distrib_pairs_part_paths[(size_t)t]);
+			if (!pf)
+				continue;
+
+			std::string line;
+			while (std::getline(pf, line))
+				of << line << "\n";
+		}
+
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -1316,6 +1499,7 @@ static bool scan_vector_fdr_core(
 	int distrib_sample,
 	uint64_t distrib_seed,
 	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path,
 	RowWriterFn write_row
 ) {
 	const int nsamples = opt.nsamples;
@@ -1333,6 +1517,8 @@ static bool scan_vector_fdr_core(
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
+
 	int nthreads = 1;
 	#ifdef ADMIXLD_HAS_OPENMP
 		nthreads = opt.threads;
@@ -1346,6 +1532,14 @@ static bool scan_vector_fdr_core(
 		summary_part_paths[(size_t)t] = summary_path + ".part." + std::to_string(t);
 		std::remove(hit_part_paths[(size_t)t].c_str());
 		std::remove(summary_part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -1438,6 +1632,10 @@ static bool scan_vector_fdr_core(
 		reservoir.reserve((size_t)std::min<long long>(rsample, m_local));
 		auto& rng = rngs[(size_t)tid];
 
+		BlockDistrib pd;
+		if (do_distrib_pairs)
+			block_distrib_init(pd, distrib_seed, (uint64_t)c, distrib_sample);
+
 		for (long long k = 0; k < m_local; ++k) {
 			const float r = rs[(size_t)k];
 			const float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
@@ -1469,6 +1667,9 @@ static bool scan_vector_fdr_core(
 						d.sample[(size_t)jd] = r;
 				}
 			}
+
+			if (do_distrib_pairs)
+				block_distrib_consider(pd, r, distrib_sample);
 		}
 
 		NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
@@ -1507,6 +1708,14 @@ static bool scan_vector_fdr_core(
 			<< fit.mu0 << "\t" << fit.sigma0 << "\t" << fit.lambda << "\t"
 			<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
 			<< hits_pos << "\t" << hits_neg << "\n";
+
+		if (do_distrib_pairs) {
+			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (dpfp) {
+				dpfp << chr << "\t";
+				write_distrib_block_stats(dpfp, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
+			}
+		}
 
 		tested_t[(size_t)tid] += m_local;
 		kept_t[(size_t)tid] += kept_local;
@@ -1554,6 +1763,29 @@ static bool scan_vector_fdr_core(
 	}
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(summary_part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		std::ofstream of(distrib_chr_pairs_path);
+		if (!of) {
+			std::cerr << "Error: cannot write to " << distrib_chr_pairs_path << "\n";
+			return false;
+		}
+
+		of << "chr\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
+
+		for (int t = 0; t < nthreads; ++t) {
+			std::ifstream pf(distrib_pairs_part_paths[(size_t)t]);
+			if (!pf)
+				continue;
+
+			std::string line;
+			while (std::getline(pf, line))
+				of << line << "\n";
+		}
+
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -2083,7 +2315,8 @@ bool scan_target_write_hits_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	const Eigen::VectorXf v = Z.col(target_w);
 	const std::string tchr = chroms[target_w];
@@ -2106,7 +2339,7 @@ bool scan_target_write_hits_fdr(
 		opt, inter_hits, inter_summary,
 		"wA\tchrA\tposA\twB\tchrB\tposB\tr\tn\tz\tzstar\tpvalue\tqvalue\tlocal_fdr\n",
 		tested_inter, kept_inter, seed,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path,
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path,
 		write_row
 	))
 		return false;
@@ -2160,7 +2393,8 @@ bool scan_vector_vs_windows_write_hits_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	// --intra has no meaning for a sample-level vector (no chromosome of its
 	// own to be "intra" relative to); silently ignored here, same as the
@@ -2178,7 +2412,7 @@ bool scan_vector_vs_windows_write_hits_fdr(
 		opt, out_path, summary_path,
 		"tag\twB\tchrB\tposB\tr\tn\tz\tzstar\tpvalue\tqvalue\tlocal_fdr\n",
 		tested_pairs, kept_pairs, seed,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path,
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path,
 		write_row
 	);
 }
@@ -2197,11 +2431,14 @@ bool scan_target_write_hits(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	const bool do_distrib = (!distrib_path.empty() || !reservoir_path.empty());
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
+
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
 
 	const int nsamples = opt.nsamples;
 	const int tile_size = opt.tile_size;
@@ -2225,6 +2462,14 @@ bool scan_target_write_hits(
 	for (int t = 0; t < nthreads; ++t) {
 		part_paths[(size_t)t] = out_path + ".part." + std::to_string(t);
 		std::remove(part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -2316,6 +2561,10 @@ bool scan_target_write_hits(
 			}
 		};
 
+		BlockDistrib pd;
+		if (do_distrib_pairs)
+			block_distrib_init(pd, distrib_seed, (uint64_t)c, distrib_sample);
+
 		for (int j0 = 0; j0 < m; j0 += tile_size) {
 			const int b2 = std::min(tile_size, m - j0);
 
@@ -2344,6 +2593,8 @@ bool scan_target_write_hits(
 
 				++tested_local;
 				consider_distrib(r);
+				if (do_distrib_pairs)
+					block_distrib_consider(pd, r, distrib_sample);
 
 				if (keep_hit(r)) {
 					ofp << target_w << "\t" << chroms[target_w] << "\t" << pos[target_w] << "\t"
@@ -2351,6 +2602,14 @@ bool scan_target_write_hits(
 						<< r << "\t" << nsamples << "\n";
 					++kept_local;
 				}
+			}
+		}
+
+		if (do_distrib_pairs) {
+			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (dpfp) {
+				dpfp << chr << "\t";
+				write_distrib_block_stats(dpfp, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
 			}
 		}
 
@@ -2385,6 +2644,29 @@ bool scan_target_write_hits(
 
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		std::ofstream of(distrib_chr_pairs_path);
+		if (!of) {
+			std::cerr << "Error: cannot write to " << distrib_chr_pairs_path << "\n";
+			return false;
+		}
+
+		of << "chr\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
+
+		for (int t = 0; t < nthreads; ++t) {
+			std::ifstream pf(distrib_pairs_part_paths[(size_t)t]);
+			if (!pf)
+				continue;
+
+			std::string line;
+			while (std::getline(pf, line))
+				of << line << "\n";
+		}
+
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -2498,7 +2780,8 @@ bool scan_vector_vs_windows_write_hits(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	std::ofstream of(out_path);
 	if (!of) {
@@ -2521,6 +2804,20 @@ bool scan_vector_vs_windows_write_hits(
 
 	bool do_distrib = (!distrib_path.empty() || !reservoir_path.empty());
 	std::mt19937_64 drng(distrib_seed);
+
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
+	if (distrib_sample <= 0)
+		distrib_sample = 200000;
+
+	std::ofstream dpof;
+	if (do_distrib_pairs) {
+		dpof.open(distrib_chr_pairs_path);
+		if (!dpof) {
+			std::cerr << "Error: cannot write to " << distrib_chr_pairs_path << "\n";
+			return false;
+		}
+		dpof << "chr\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n";
+	}
 
 	struct DistribSummary {
 		float min_r = std::numeric_limits<float>::infinity();
@@ -2579,6 +2876,10 @@ bool scan_vector_vs_windows_write_hits(
 	for (const auto& chr : chr_order) {
 		const auto& idx = windows_by_chr.at(chr);
 
+		BlockDistrib pd;
+		if (do_distrib_pairs)
+			block_distrib_init(pd, distrib_seed, (uint64_t)std::hash<std::string>{}(chr), distrib_sample);
+
 		for (int k = 0; k < (int)idx.size(); ++k) {
 			int w = idx[k];
 
@@ -2594,6 +2895,8 @@ bool scan_vector_vs_windows_write_hits(
 
 			++tested_pairs;
 			consider_distrib(r);
+			if (do_distrib_pairs && std::isfinite(r))
+				block_distrib_consider(pd, r, distrib_sample);
 
 			if (keep_hit(r)) {
 				of << "sample_haplo"
@@ -2606,9 +2909,16 @@ bool scan_vector_vs_windows_write_hits(
 				++kept_pairs;
 			}
 		}
+
+		if (do_distrib_pairs) {
+			dpof << chr << "\t";
+			write_distrib_block_stats(dpof, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
+		}
 	}
 
 	of.close();
+	if (do_distrib_pairs)
+		dpof.close();
 
 	if (do_distrib) {
 		if ((int)dsample.size() > distrib_sample) {

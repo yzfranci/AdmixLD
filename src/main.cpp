@@ -62,6 +62,7 @@ static void usage() {
 		<< "  --threads INT          Number of OpenMP threads for scan steps (default: 1)\n"
 		<< "  --distrib              Write empirical scan distribution summary\n"
 		<< "  --distrib-raw          Write raw reservoir sample to *.scan.summary.reservoir.tsv (implies --distrib)\n"
+		<< "  --distrib-chr-pairs    Also write the --distrib summary broken out per chromosome pair (interchromosomal scans only; ignored under --intra)\n"
 		<< "  --distrib-sample INT   Reservoir sample size for distribution summary (default: 200000)\n"
 		<< "  --seed INT             RNG seed for distribution summary (default: 1)\n"
 		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
@@ -121,6 +122,7 @@ struct CliOptions {
 
 	bool distrib = false;
 	bool distrib_raw = false;
+	bool distrib_chr_pairs = false;
 	int distrib_sample = 200000;
 
 	uint64_t seed = 1;
@@ -217,6 +219,9 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--distrib-raw") {
 			opt.distrib_raw = true;
 			opt.distrib = true;
+
+		} else if (a == "--distrib-chr-pairs") {
+			opt.distrib_chr_pairs = true;
 
 		} else if (a == "--distrib-sample" && i + 1 < argc) {
 			opt.distrib_sample = std::stoi(argv[++i]);
@@ -385,6 +390,12 @@ static int validate_options(const CliOptions& opt) {
 		}
 		if (!opt.intra)
 			std::cerr << "Warning: --min-dist is ignored without --intra\n";
+	}
+
+	if (opt.intra && opt.distrib_chr_pairs && !opt.has_target) {
+		std::cerr << "Warning: --distrib-chr-pairs has no chromosome-pair blocks to report under --intra "
+		             "(non-target scans skip the interchromosomal pass entirely); no per-chromosome-pair "
+		             "file will be written.\n";
 	}
 
 	if (opt.has_fdr) {
@@ -1236,10 +1247,13 @@ int main(int argc, char** argv) {
 		std::string out_path = cli.out + ".samplehaplo.hits.tsv";
 		std::string distrib_path;
 		std::string reservoir_path;
+		std::string distrib_chr_pairs_path;
 		if (cli.distrib)
 			distrib_path = cli.out + ".samplehaplo.scan.summary.tsv";
 		if (cli.distrib_raw)
 			reservoir_path = cli.out + ".samplehaplo.scan.summary.reservoir.tsv";
+		if (cli.distrib_chr_pairs)
+			distrib_chr_pairs_path = cli.out + ".samplehaplo.scan.summary.by_chr_pair.tsv";
 
 		long long tested = 0;
 		long long kept = 0;
@@ -1264,7 +1278,8 @@ int main(int argc, char** argv) {
 					distrib_path,
 					cli.distrib_sample,
 					cli.seed,
-					reservoir_path
+					reservoir_path,
+					distrib_chr_pairs_path
 				))
 					return 1;
 			} else {
@@ -1282,13 +1297,13 @@ int main(int argc, char** argv) {
 					scan_ok = scan_vector_vs_windows_write_hits_excl_focus_fdr(
 						X, g, chroms, pos, markers_by_chr, chr_order,
 						hc_freq_full, opt, out_path, fdr_summary_path, tested, kept,
-						freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+						freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 					);
 				} else {
 					scan_ok = scan_vector_vs_windows_write_hits_excl_focus_fdr(
 						X, g, chroms, pos, markers_by_chr, chr_order,
 						hc_full, opt, out_path, fdr_summary_path, tested, kept, cli.seed,
-						distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+						distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 					);
 				}
 				if (!scan_ok)
@@ -1307,7 +1322,8 @@ int main(int argc, char** argv) {
 				distrib_path,
 				cli.distrib_sample,
 				cli.seed,
-				reservoir_path
+				reservoir_path,
+				distrib_chr_pairs_path
 			))
 				return 1;
 
@@ -1326,13 +1342,13 @@ int main(int argc, char** argv) {
 				scan_ok = scan_vector_vs_windows_write_hits_excl_focus(
 					X, g, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, out_path, tested, kept,
-					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			} else {
 				scan_ok = scan_vector_vs_windows_write_hits_excl_focus(
 					X, g, chroms, pos, markers_by_chr, chr_order,
 					hc_full, opt, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			}
 			if (!scan_ok)
@@ -1349,6 +1365,8 @@ int main(int argc, char** argv) {
 			std::cout << "  wrote        = " << distrib_path << "\n";
 		if (cli.distrib_raw)
 			std::cout << "  wrote        = " << reservoir_path << "\n";
+		if (cli.distrib_chr_pairs && !distrib_chr_pairs_path.empty())
+			std::cout << "  wrote        = " << distrib_chr_pairs_path << "\n";
 
 		return 0;
 	}
@@ -1357,10 +1375,13 @@ int main(int argc, char** argv) {
 	std::string out_path = cli.out + ".hits.tsv";
 	std::string distrib_path;
 	std::string reservoir_path;
+	std::string distrib_chr_pairs_path;
 	if (cli.distrib)
 		distrib_path = cli.out + ".scan.summary.tsv";
 	if (cli.distrib_raw)
 		reservoir_path = cli.out + ".scan.summary.reservoir.tsv";
+	if (cli.distrib_chr_pairs)
+		distrib_chr_pairs_path = cli.out + ".scan.summary.by_chr_pair.tsv";
 
 	long long tested = 0;
 	long long kept = 0;
@@ -1375,7 +1396,7 @@ int main(int argc, char** argv) {
 			if (!scan_target_write_hits_fdr(
 				Z, chroms, pos, markers_by_chr, chr_order,
 				opt, target_w, out_path, fdr_summary_path, tested, kept, cli.seed,
-				distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+				distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 			))
 				return 1;
 		} else if (target_w >= 0) {
@@ -1384,13 +1405,13 @@ int main(int argc, char** argv) {
 				scan_ok = scan_target_write_hits_excl_focus_fdr(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, target_w, out_path, fdr_summary_path, tested, kept,
-					freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			} else {
 				scan_ok = scan_target_write_hits_excl_focus_fdr(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_full, opt, target_w, out_path, fdr_summary_path, tested, kept, cli.seed,
-					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			}
 			if (!scan_ok) return 1;
@@ -1398,7 +1419,7 @@ int main(int argc, char** argv) {
 			if (!scan_markers_write_hits_fdr(
 				Z, chroms, pos, markers_by_chr, chr_order,
 				opt, out_path, fdr_summary_path, tested, kept, cli.seed,
-				distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+				distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 			))
 				return 1;
 		} else {
@@ -1407,13 +1428,13 @@ int main(int argc, char** argv) {
 				scan_ok = scan_markers_write_hits_excl_focus_fdr(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, out_path, fdr_summary_path, tested, kept,
-					freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					freqs_scan, cli.seed, distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			} else {
 				scan_ok = scan_markers_write_hits_excl_focus_fdr(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_full, opt, out_path, fdr_summary_path, tested, kept, cli.seed,
-					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			}
 			if (!scan_ok) return 1;
@@ -1423,14 +1444,14 @@ int main(int argc, char** argv) {
 			if (!scan_target_write_hits(
 				Z, chroms, pos, markers_by_chr, chr_order,
 				opt, target_w, out_path, tested, kept,
-				distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+				distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 			))
 				return 1;
 		} else {
 			if (!scan_markers_write_hits(
 				Z, chroms, pos, markers_by_chr, chr_order,
 				opt, out_path, tested, kept,
-				distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+				distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 			))
 				return 1;
 		}
@@ -1441,13 +1462,13 @@ int main(int argc, char** argv) {
 				scan_ok = scan_target_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, target_w, out_path, tested, kept,
-					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			} else {
 				scan_ok = scan_target_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_full, opt, target_w, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			}
 			if (!scan_ok) return 1;
@@ -1457,13 +1478,13 @@ int main(int argc, char** argv) {
 				scan_ok = scan_markers_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_freq_full, opt, out_path, tested, kept,
-					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					freqs_scan, distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			} else {
 				scan_ok = scan_markers_write_hits_excl_focus(
 					X, chroms, pos, markers_by_chr, chr_order,
 					hc_full, opt, out_path, tested, kept,
-					distrib_path, cli.distrib_sample, cli.seed, reservoir_path
+					distrib_path, cli.distrib_sample, cli.seed, reservoir_path, distrib_chr_pairs_path
 				);
 			}
 			if (!scan_ok) return 1;
@@ -1483,6 +1504,8 @@ int main(int argc, char** argv) {
 		std::cout << "  wrote        = " << distrib_path << "\n";
 	if (cli.distrib_raw)
 		std::cout << "  wrote        = " << reservoir_path << "\n";
+	if (cli.distrib_chr_pairs && !distrib_chr_pairs_path.empty())
+		std::cout << "  wrote        = " << distrib_chr_pairs_path << "\n";
 
 	if (cli.has_fdr) {
 		// no r-magnitude filter to report; hit calling is q-value driven

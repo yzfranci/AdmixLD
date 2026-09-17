@@ -24,7 +24,8 @@ bool scan_markers_write_hits_excl_focus(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_markers_write_hits_excl_focus(
@@ -42,7 +43,8 @@ bool scan_markers_write_hits_excl_focus(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 // LOCO version of scan_markers_write_hits_fdr: per chromosome-pair block,
@@ -64,7 +66,8 @@ bool scan_markers_write_hits_excl_focus_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_markers_write_hits_excl_focus_fdr(
@@ -84,7 +87,8 @@ bool scan_markers_write_hits_excl_focus_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_target_write_hits_excl_focus(
@@ -102,7 +106,8 @@ bool scan_target_write_hits_excl_focus(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_target_write_hits_excl_focus(
@@ -121,7 +126,8 @@ bool scan_target_write_hits_excl_focus(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_vector_vs_windows_write_hits_excl_focus(
@@ -139,7 +145,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_vector_vs_windows_write_hits_excl_focus(
@@ -158,7 +165,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 // LOCO version of scan_target_write_hits_fdr: HI/residualized vectors are
@@ -181,7 +189,8 @@ bool scan_target_write_hits_excl_focus_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_target_write_hits_excl_focus_fdr(
@@ -202,7 +211,8 @@ bool scan_target_write_hits_excl_focus_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 // LOCO version of scan_vector_vs_windows_write_hits_fdr: HI/residualized
@@ -224,7 +234,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_vector_vs_windows_write_hits_excl_focus_fdr(
@@ -245,6 +256,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 

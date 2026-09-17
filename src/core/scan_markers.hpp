@@ -67,7 +67,8 @@ bool scan_markers_write_hits(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 
@@ -89,7 +90,8 @@ bool scan_markers_write_hits_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_target_write_hits(
@@ -106,7 +108,8 @@ bool scan_target_write_hits(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 bool scan_vector_vs_windows_write_hits(
@@ -123,7 +126,8 @@ bool scan_vector_vs_windows_write_hits(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 // One calibration+hit-calling pass per chromosome in chr_order, each tested
@@ -144,7 +148,8 @@ bool scan_target_write_hits_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 
 // Same as scan_target_write_hits_fdr, but for a sample-level vector (e.g.
@@ -166,6 +171,7 @@ bool scan_vector_vs_windows_write_hits_fdr(
 	const std::string& distrib_path = "",
 	int distrib_sample = 200000,
 	uint64_t distrib_seed = 1,
-	const std::string& reservoir_path = ""
+	const std::string& reservoir_path = "",
+	const std::string& distrib_chr_pairs_path = ""
 );
 

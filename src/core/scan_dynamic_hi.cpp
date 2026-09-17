@@ -169,6 +169,92 @@ static void compute_mean_sd_from_sample(
 	}
 }
 
+// Per-block (chromosome-pair, or single chromosome) accumulator for
+// --distrib-chr-pairs, mirroring ThreadDistrib but scoped to one block and
+// flushed immediately after that block finishes.
+struct BlockDistrib {
+	long long tested_pairs = 0;
+	float min_r = std::numeric_limits<float>::infinity();
+	float max_r = -std::numeric_limits<float>::infinity();
+	std::mt19937_64 rng;
+	std::vector<float> sample;
+};
+
+static void block_distrib_init(BlockDistrib& d, uint64_t distrib_seed, uint64_t block_salt, int distrib_sample) {
+	d.rng = std::mt19937_64(distrib_seed ^ 0xD1DB1000000ULL ^ block_salt);
+	d.sample.reserve((size_t)distrib_sample);
+}
+
+static void block_distrib_consider(BlockDistrib& d, float r, int distrib_sample) {
+	if (!std::isfinite(r))
+		return;
+
+	if (r < d.min_r) d.min_r = r;
+	if (r > d.max_r) d.max_r = r;
+
+	++d.tested_pairs;
+
+	if ((int)d.sample.size() < distrib_sample) {
+		d.sample.push_back(r);
+	} else {
+		std::uniform_int_distribution<long long> U(0, d.tested_pairs - 1);
+		long long j = U(d.rng);
+		if (j < distrib_sample)
+			d.sample[(size_t)j] = r;
+	}
+}
+
+// Writes one --distrib-chr-pairs summary row (same 14 stat columns as
+// --distrib's global summary). Caller writes the block's key column(s)
+// (chrA/chrB, or chr) before calling.
+static void write_distrib_block_stats(
+	std::ostream& out,
+	std::vector<float>& sample,
+	long long tested,
+	float min_r,
+	float max_r
+) {
+	if (tested == 0 || sample.empty()) {
+		out << 0 << "\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n";
+		return;
+	}
+
+	std::sort(sample.begin(), sample.end());
+
+	float mean, sd;
+	compute_mean_sd_from_sample(sample, mean, sd);
+
+	double mu2 = 0.0, m2_r2 = 0.0;
+	long long n2 = 0;
+	for (float x : sample) {
+		if (!std::isfinite(x))
+			continue;
+		++n2;
+		double r2 = (double)x * (double)x;
+		double dr2 = r2 - mu2;
+		mu2 += dr2 / (double)n2;
+		m2_r2 += dr2 * (r2 - mu2);
+	}
+	float mean_r2 = (n2 > 0) ? (float)mu2 : std::numeric_limits<float>::quiet_NaN();
+	float sd_r2 = (n2 > 1) ? (float)std::sqrt(m2_r2 / (double)(n2 - 1)) : std::numeric_limits<float>::quiet_NaN();
+
+	out << tested
+		<< "\t" << max_r
+		<< "\t" << quantile_from_sorted(sample, 0.99)
+		<< "\t" << quantile_from_sorted(sample, 0.95)
+		<< "\t" << quantile_from_sorted(sample, 0.75)
+		<< "\t" << quantile_from_sorted(sample, 0.50)
+		<< "\t" << quantile_from_sorted(sample, 0.25)
+		<< "\t" << quantile_from_sorted(sample, 0.05)
+		<< "\t" << quantile_from_sorted(sample, 0.01)
+		<< "\t" << min_r
+		<< "\t" << mean
+		<< "\t" << sd
+		<< "\t" << mean_r2
+		<< "\t" << sd_r2
+		<< "\n";
+}
+
 template<typename HC, typename HiExcludeFn>
 static bool scan_markers_write_hits_excl_focus_T(
 	const Eigen::MatrixXf& X_scan,
@@ -186,6 +272,7 @@ static bool scan_markers_write_hits_excl_focus_T(
 	int distrib_sample,
 	uint64_t distrib_seed,
 	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	const int nsamples = opt.nsamples;
@@ -197,6 +284,8 @@ static bool scan_markers_write_hits_excl_focus_T(
 	const bool do_distrib = (!distrib_path.empty() || !reservoir_path.empty());
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
+
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
 
 	int nthreads = 1;
 	#ifdef ADMIXLD_HAS_OPENMP
@@ -214,6 +303,14 @@ static bool scan_markers_write_hits_excl_focus_T(
 	for (int t = 0; t < nthreads; ++t) {
 		part_paths[(size_t)t] = out_path + ".part." + std::to_string(t);
 		std::remove(part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -346,6 +443,10 @@ static bool scan_markers_write_hits_excl_focus_T(
 		Eigen::MatrixXf B(nsamples, tile_size);
 		Eigen::MatrixXf R(tile_size, tile_size);
 
+		BlockDistrib pd;
+		if (do_distrib_pairs)
+			block_distrib_init(pd, distrib_seed, (uint64_t)std::hash<std::string>{}(chr1 + "\t" + chr2), distrib_sample);
+
 		for (int i0 = 0; i0 < m1; i0 += tile_size) {
 			const int b1 = std::min(tile_size, m1 - i0);
 
@@ -373,6 +474,8 @@ static bool scan_markers_write_hits_excl_focus_T(
 						++tested_t[(size_t)tid];
 						if (do_distrib)
 							consider_distrib(td[(size_t)tid], r, distrib_sample);
+						if (do_distrib_pairs)
+							block_distrib_consider(pd, r, distrib_sample);
 
 						if (keep_hit_r(r, opt)) {
 							ofp << a << "\t" << chroms_scan[a] << "\t" << pos_scan[a] << "\t"
@@ -382,6 +485,14 @@ static bool scan_markers_write_hits_excl_focus_T(
 						}
 					}
 				}
+			}
+		}
+
+		if (do_distrib_pairs) {
+			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (dpfp) {
+				dpfp << chr1 << "\t" << chr2 << "\t";
+				write_distrib_block_stats(dpfp, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
 			}
 		}
 	};
@@ -444,6 +555,20 @@ static bool scan_markers_write_hits_excl_focus_T(
 
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		try {
+			merge_part_files(
+				distrib_chr_pairs_path, distrib_pairs_part_paths,
+				"chrA\tchrB\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n"
+			);
+		} catch (const std::exception& e) {
+			std::cerr << "Error: " << e.what() << "\n";
+			return false;
+		}
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -565,7 +690,8 @@ bool scan_markers_write_hits_excl_focus(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -573,7 +699,7 @@ bool scan_markers_write_hits_excl_focus(
 	return scan_markers_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path
 	);
 }
 
@@ -592,7 +718,8 @@ bool scan_markers_write_hits_excl_focus(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -600,7 +727,7 @@ bool scan_markers_write_hits_excl_focus(
 	return scan_markers_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path, &freqs_scan
 	);
 }
 
@@ -1026,6 +1153,7 @@ static bool scan_markers_write_hits_excl_focus_fdr_T(
 	int distrib_sample,
 	uint64_t distrib_seed,
 	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	if (opt.intra) {
@@ -1054,6 +1182,8 @@ static bool scan_markers_write_hits_excl_focus_fdr_T(
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
+
 	const int C = (int)chr_order_scan.size();
 	std::vector<std::pair<int,int>> jobs;
 	jobs.reserve((size_t)C * (size_t)(C - 1) / 2);
@@ -1077,6 +1207,14 @@ static bool scan_markers_write_hits_excl_focus_fdr_T(
 		summary_part_paths[(size_t)t] = summary_path + ".part." + std::to_string(t);
 		std::remove(hit_part_paths[(size_t)t].c_str());
 		std::remove(summary_part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -1175,6 +1313,10 @@ static bool scan_markers_write_hits_excl_focus_fdr_T(
 		reservoir.reserve((size_t)rsample);
 		auto& rng = rngs[(size_t)tid];
 
+		BlockDistrib pd;
+		if (do_distrib_pairs)
+			block_distrib_init(pd, distrib_seed, (uint64_t)j, distrib_sample);
+
 		for_each_pair([&](int, int, float r) {
 			++m_local;
 			float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
@@ -1190,6 +1332,8 @@ static bool scan_markers_write_hits_excl_focus_fdr_T(
 
 			if (do_distrib)
 				consider_distrib(td[(size_t)tid], r, distrib_sample);
+			if (do_distrib_pairs)
+				block_distrib_consider(pd, r, distrib_sample);
 		});
 
 		NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
@@ -1230,6 +1374,14 @@ static bool scan_markers_write_hits_excl_focus_fdr_T(
 			<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
 			<< hits_pos << "\t" << hits_neg << "\n";
 
+		if (do_distrib_pairs) {
+			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (dpfp) {
+				dpfp << chr1 << "\t" << chr2 << "\t";
+				write_distrib_block_stats(dpfp, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
+			}
+		}
+
 		tested_t[(size_t)tid] += m_local;
 		kept_t[(size_t)tid] += kept_local;
 	}
@@ -1262,6 +1414,20 @@ static bool scan_markers_write_hits_excl_focus_fdr_T(
 	}
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(summary_part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		try {
+			merge_part_files(
+				distrib_chr_pairs_path, distrib_pairs_part_paths,
+				"chrA\tchrB\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n"
+			);
+		} catch (const std::exception& e) {
+			std::cerr << "Error: " << e.what() << "\n";
+			return false;
+		}
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -1381,7 +1547,8 @@ bool scan_markers_write_hits_excl_focus_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -1389,7 +1556,7 @@ bool scan_markers_write_hits_excl_focus_fdr(
 	return scan_markers_write_hits_excl_focus_fdr_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, summary_path, tested_pairs, kept_pairs, seed,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path
 	);
 }
 
@@ -1410,7 +1577,8 @@ bool scan_markers_write_hits_excl_focus_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -1418,7 +1586,7 @@ bool scan_markers_write_hits_excl_focus_fdr(
 	return scan_markers_write_hits_excl_focus_fdr_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, summary_path, tested_pairs, kept_pairs, seed,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path, &freqs_scan
 	);
 }
 
@@ -1440,11 +1608,14 @@ static bool scan_target_write_hits_excl_focus_T(
 	int distrib_sample,
 	uint64_t distrib_seed,
 	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	const bool do_distrib = (!distrib_path.empty() || !reservoir_path.empty());
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
+
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
 
 	const int nsamples = opt.nsamples;
 	const int tile_size = opt.tile_size;
@@ -1472,6 +1643,14 @@ static bool scan_target_write_hits_excl_focus_T(
 	for (int t = 0; t < nthreads; ++t) {
 		part_paths[(size_t)t] = out_path + ".part." + std::to_string(t);
 		std::remove(part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -1527,10 +1706,15 @@ static bool scan_target_write_hits_excl_focus_T(
 		else
 			h = hi_excluding(hc_full, tchr, chr);
 
+		BlockDistrib pd;
+		if (do_distrib_pairs)
+			block_distrib_init(pd, distrib_seed, (uint64_t)c, distrib_sample);
+
 		auto local_consider = [&](float r) {
-			if (!do_distrib)
-				return;
-			consider_distrib(td[(size_t)tid], r, distrib_sample);
+			if (do_distrib)
+				consider_distrib(td[(size_t)tid], r, distrib_sample);
+			if (do_distrib_pairs)
+				block_distrib_consider(pd, r, distrib_sample);
 		};
 
 		if (same_chr) {
@@ -1645,6 +1829,14 @@ static bool scan_target_write_hits_excl_focus_T(
 			tested_t[(size_t)tid] += tested_local;
 			kept_t[(size_t)tid] += kept_local;
 		}
+
+		if (do_distrib_pairs) {
+			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (dpfp) {
+				dpfp << chr << "\t";
+				write_distrib_block_stats(dpfp, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
+			}
+		}
 	}
 
 	for (int t = 0; t < nthreads; ++t) {
@@ -1674,6 +1866,20 @@ static bool scan_target_write_hits_excl_focus_T(
 
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		try {
+			merge_part_files(
+				distrib_chr_pairs_path, distrib_pairs_part_paths,
+				"chr\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n"
+			);
+		} catch (const std::exception& e) {
+			std::cerr << "Error: " << e.what() << "\n";
+			return false;
+		}
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -1796,7 +2002,8 @@ bool scan_target_write_hits_excl_focus(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -1804,7 +2011,7 @@ bool scan_target_write_hits_excl_focus(
 	return scan_target_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, target_w, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path
 	);
 }
 
@@ -1824,7 +2031,8 @@ bool scan_target_write_hits_excl_focus(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -1832,7 +2040,7 @@ bool scan_target_write_hits_excl_focus(
 	return scan_target_write_hits_excl_focus_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, target_w, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path, &freqs_scan
 	);
 }
 
@@ -1854,6 +2062,7 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 	int distrib_sample,
 	uint64_t distrib_seed,
 	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	if (distrib_sample <= 0)
@@ -1869,6 +2078,7 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 	kept_pairs = 0;
 
 	const bool do_distrib = (!distrib_path.empty() || !reservoir_path.empty());
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
 	const float denom = 1.0f / (float)(nsamples - 1);
 
 	int nthreads = 1;
@@ -1887,6 +2097,14 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 	for (int t = 0; t < nthreads; ++t) {
 		part_paths[(size_t)t] = out_path + ".part." + std::to_string(t);
 		std::remove(part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -1951,6 +2169,10 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 		long long tested_local = 0;
 		long long kept_local = 0;
 
+		BlockDistrib pd;
+		if (do_distrib_pairs)
+			block_distrib_init(pd, distrib_seed, (uint64_t)c, distrib_sample);
+
 		for (int j = 0; j < m; ++j) {
 			const int w = idx[j];
 
@@ -1969,6 +2191,8 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 			++tested_local;
 			if (do_distrib)
 				consider_distrib(td[(size_t)tid], r, distrib_sample);
+			if (do_distrib_pairs)
+				block_distrib_consider(pd, r, distrib_sample);
 
 			if (keep_hit_r(r, opt)) {
 				ofp << "sample_haplo"
@@ -1979,6 +2203,14 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 					<< "\t" << nsamples
 					<< "\n";
 				++kept_local;
+			}
+		}
+
+		if (do_distrib_pairs) {
+			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+			if (dpfp) {
+				dpfp << chr << "\t";
+				write_distrib_block_stats(dpfp, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
 			}
 		}
 
@@ -2013,6 +2245,20 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_T(
 
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		try {
+			merge_part_files(
+				distrib_chr_pairs_path, distrib_pairs_part_paths,
+				"chr\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n"
+			);
+		} catch (const std::exception& e) {
+			std::cerr << "Error: " << e.what() << "\n";
+			return false;
+		}
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -2135,7 +2381,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -2143,7 +2390,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	return scan_vector_vs_windows_write_hits_excl_focus_T(
 		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path
 	);
 }
 
@@ -2163,7 +2410,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -2171,7 +2419,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus(
 	return scan_vector_vs_windows_write_hits_excl_focus_T(
 		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, tested_pairs, kept_pairs,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path, &freqs_scan
 	);
 }
 
@@ -2194,12 +2442,21 @@ static void run_vector_block_fdr(
 	const std::string& chr_label,
 	long long& tested_out,
 	long long& kept_out,
-	RowWriterFn write_row
+	RowWriterFn write_row,
+	const std::string& distrib_chr_key = "",
+	bool do_distrib_pairs = false,
+	uint64_t distrib_seed = 1,
+	uint64_t block_salt = 0,
+	std::ofstream* dpfp_ptr = nullptr
 ) {
 	const long long m_local = (long long)bs.size();
 
 	std::vector<double> reservoir;
 	reservoir.reserve((size_t)std::min<long long>(rsample, m_local));
+
+	BlockDistrib pd;
+	if (do_distrib_pairs)
+		block_distrib_init(pd, distrib_seed, block_salt, distrib_sample);
 
 	for (long long k = 0; k < m_local; ++k) {
 		const float r = rs[(size_t)k];
@@ -2217,6 +2474,8 @@ static void run_vector_block_fdr(
 
 		if (do_distrib)
 			consider_distrib(*td_ptr, r, distrib_sample);
+		if (do_distrib_pairs)
+			block_distrib_consider(pd, r, distrib_sample);
 	}
 
 	NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
@@ -2254,6 +2513,11 @@ static void run_vector_block_fdr(
 		<< fit.mu0 << "\t" << fit.sigma0 << "\t" << fit.lambda << "\t"
 		<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
 		<< hits_pos << "\t" << hits_neg << "\n";
+
+	if (do_distrib_pairs && dpfp_ptr) {
+		*dpfp_ptr << distrib_chr_key << "\t";
+		write_distrib_block_stats(*dpfp_ptr, pd.sample, pd.tested_pairs, pd.min_r, pd.max_r);
+	}
 
 	tested_out += m_local;
 	kept_out += kept_local;
@@ -2600,6 +2864,7 @@ static bool scan_target_write_hits_excl_focus_fdr_T(
 	int distrib_sample,
 	uint64_t distrib_seed,
 	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	// --intra is additive: the interchromosomal portion below always runs;
@@ -2628,6 +2893,8 @@ static bool scan_target_write_hits_excl_focus_fdr_T(
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
+
 	int nthreads = 1;
 	#ifdef ADMIXLD_HAS_OPENMP
 	nthreads = opt.threads;
@@ -2644,6 +2911,14 @@ static bool scan_target_write_hits_excl_focus_fdr_T(
 		summary_part_paths[(size_t)t] = inter_summary + ".part." + std::to_string(t);
 		std::remove(hit_part_paths[(size_t)t].c_str());
 		std::remove(summary_part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -2742,10 +3017,15 @@ static bool scan_target_write_hits_excl_focus_fdr_T(
 		long long tested_local = 0;
 		long long kept_local = 0;
 
+		std::ofstream dpfp;
+		if (do_distrib_pairs)
+			dpfp.open(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+
 		run_vector_block_fdr(
 			bs, rs, nsamples, opt, rsample, rngs[(size_t)tid],
 			do_distrib, do_distrib ? &td[(size_t)tid] : nullptr, distrib_sample,
-			hfp, sfp, chr + "\tNA\tNA", tested_local, kept_local, write_row
+			hfp, sfp, chr + "\tNA\tNA", tested_local, kept_local, write_row,
+			chr, do_distrib_pairs, distrib_seed, (uint64_t)c, do_distrib_pairs ? &dpfp : nullptr
 		);
 
 		tested_t[(size_t)tid] += tested_local;
@@ -2780,6 +3060,20 @@ static bool scan_target_write_hits_excl_focus_fdr_T(
 	}
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(summary_part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		try {
+			merge_part_files(
+				distrib_chr_pairs_path, distrib_pairs_part_paths,
+				"chr\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n"
+			);
+		} catch (const std::exception& e) {
+			std::cerr << "Error: " << e.what() << "\n";
+			return false;
+		}
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -2930,7 +3224,8 @@ bool scan_target_write_hits_excl_focus_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -2938,7 +3233,7 @@ bool scan_target_write_hits_excl_focus_fdr(
 	return scan_target_write_hits_excl_focus_fdr_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, target_w, out_path, summary_path, tested_pairs, kept_pairs, seed,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path
 	);
 }
 
@@ -2960,7 +3255,8 @@ bool scan_target_write_hits_excl_focus_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -2968,7 +3264,7 @@ bool scan_target_write_hits_excl_focus_fdr(
 	return scan_target_write_hits_excl_focus_fdr_T(
 		X_scan, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, target_w, out_path, summary_path, tested_pairs, kept_pairs, seed,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path, &freqs_scan
 	);
 }
 
@@ -2995,6 +3291,7 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_fdr_T(
 	int distrib_sample,
 	uint64_t distrib_seed,
 	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path,
 	const std::vector<MarkerFreq>* freqs_scan = nullptr
 ) {
 	// --intra has no meaning for a sample-level vector (no chromosome of its
@@ -3021,6 +3318,8 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_fdr_T(
 	if (distrib_sample <= 0)
 		distrib_sample = 200000;
 
+	const bool do_distrib_pairs = !distrib_chr_pairs_path.empty();
+
 	int nthreads = 1;
 	#ifdef ADMIXLD_HAS_OPENMP
 	nthreads = opt.threads;
@@ -3037,6 +3336,14 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_fdr_T(
 		summary_part_paths[(size_t)t] = summary_path + ".part." + std::to_string(t);
 		std::remove(hit_part_paths[(size_t)t].c_str());
 		std::remove(summary_part_paths[(size_t)t].c_str());
+	}
+
+	std::vector<std::string> distrib_pairs_part_paths((size_t)nthreads);
+	if (do_distrib_pairs) {
+		for (int t = 0; t < nthreads; ++t) {
+			distrib_pairs_part_paths[(size_t)t] = distrib_chr_pairs_path + ".part." + std::to_string(t);
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+		}
 	}
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
@@ -3139,10 +3446,15 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_fdr_T(
 		long long tested_local = 0;
 		long long kept_local = 0;
 
+		std::ofstream dpfp;
+		if (do_distrib_pairs)
+			dpfp.open(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
+
 		run_vector_block_fdr(
 			bs, rs, nsamples, opt, rsample, rngs[(size_t)tid],
 			do_distrib, do_distrib ? &td[(size_t)tid] : nullptr, distrib_sample,
-			hfp, sfp, chr + "\tNA\tNA", tested_local, kept_local, write_row
+			hfp, sfp, chr + "\tNA\tNA", tested_local, kept_local, write_row,
+			chr, do_distrib_pairs, distrib_seed, (uint64_t)c, do_distrib_pairs ? &dpfp : nullptr
 		);
 
 		tested_t[(size_t)tid] += tested_local;
@@ -3177,6 +3489,20 @@ static bool scan_vector_vs_windows_write_hits_excl_focus_fdr_T(
 	}
 	for (int t = 0; t < nthreads; ++t)
 		std::remove(summary_part_paths[(size_t)t].c_str());
+
+	if (do_distrib_pairs) {
+		try {
+			merge_part_files(
+				distrib_chr_pairs_path, distrib_pairs_part_paths,
+				"chr\ttested_pairs\tmax_r\tp99\tp95\tp75\tmedian\tp25\tp05\tp01\tmin_r\tmean\tsd\tmean_r2\tsd_r2\n"
+			);
+		} catch (const std::exception& e) {
+			std::cerr << "Error: " << e.what() << "\n";
+			return false;
+		}
+		for (int t = 0; t < nthreads; ++t)
+			std::remove(distrib_pairs_part_paths[(size_t)t].c_str());
+	}
 
 	if (do_distrib) {
 		long long total_tested = 0;
@@ -3297,7 +3623,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsWeighted& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_weighted_excluding(hc, a, b);
@@ -3305,7 +3632,7 @@ bool scan_vector_vs_windows_write_hits_excl_focus_fdr(
 	return scan_vector_vs_windows_write_hits_excl_focus_fdr_T(
 		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, summary_path, tested_pairs, kept_pairs, seed,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path
 	);
 }
 
@@ -3327,7 +3654,8 @@ bool scan_vector_vs_windows_write_hits_excl_focus_fdr(
 	const std::string& distrib_path,
 	int distrib_sample,
 	uint64_t distrib_seed,
-	const std::string& reservoir_path
+	const std::string& reservoir_path,
+	const std::string& distrib_chr_pairs_path
 ) {
 	auto fn = [](const HiComponentsFreq& hc, const std::string& a, const std::string& b) {
 		return hi_from_components_freq_excluding(hc, a, b);
@@ -3335,6 +3663,6 @@ bool scan_vector_vs_windows_write_hits_excl_focus_fdr(
 	return scan_vector_vs_windows_write_hits_excl_focus_fdr_T(
 		X_scan, v_raw, chroms_scan, pos_scan, windows_by_chr_scan, chr_order_scan,
 		hc_full, fn, opt, out_path, summary_path, tested_pairs, kept_pairs, seed,
-		distrib_path, distrib_sample, distrib_seed, reservoir_path, &freqs_scan
+		distrib_path, distrib_sample, distrib_seed, reservoir_path, distrib_chr_pairs_path, &freqs_scan
 	);
 }

@@ -269,6 +269,24 @@ r
 
 This file is intended for empirical null calibration.
 
+### Chromosome-Pair Distribution Summary — `<prefix>.scan.summary.by_chr_pair.tsv`
+
+Written when `--distrib-chr-pairs` is used. Same columns as the scan distribution summary above, but broken out one row per block instead of aggregated genome-wide: one row per chromosome pair for the plain marker/marker scan (`--fdr` included), or one row per chromosome for `--target-chr`/`--target-pos` and `--sample-haplo` scans, where the block is "target/vector vs. one chromosome" rather than a chromosome pair.
+
+| Column                | Description |
+|------------------------|-------------|
+| `chrA`, `chrB`         | Block's chromosome pair (plain marker/marker scan only) |
+| `chr`                  | Block's chromosome (`--target-chr`/`--target-pos` and `--sample-haplo` scans only, in place of `chrA`/`chrB`) |
+| `tested_pairs`         | Number of pairs tested in this block |
+| `max_r`, `min_r`       | Block extremes |
+| Percentiles            | `p99`, `p95`, `p75`, `median`, `p25`, `p05`, `p01` |
+| `mean`, `sd`           | Mean and SD |
+| `mean_r2`, `sd_r2`     | R² statistics |
+
+Each block's reservoir is sampled and dropped independently as soon as that block finishes (same immediate-flush approach `--fdr-sample`'s per-block calibration reservoir uses), so memory use is bounded by thread count rather than growing with the number of chromosome pairs. Row order follows the order blocks finish, not any canonical chromosome ordering.
+
+Not supported under `--intra`: intrachromosomal scans have no chromosome-pair blocks for the plain marker/marker scan (a warning is printed and only a header row is written). `--target-chr`/`--target-pos` under `--intra` still reports the usual per-chromosome rows for every other chromosome, since target-vs-chromosome blocks exist independently of `--intra`; the plain (non-FDR) target scan additionally reports the target's own chromosome as one more row, but the FDR target scan does not, since its distance-binned intrachromosomal pass doesn't collect a per-block reservoir (see [`--target-chr`/`--target-pos` with `--intra` is additive](#empirical-null-fdr)). `--sample-haplo` is unaffected by `--intra` either way, since a sample-level vector has no chromosome of its own.
+
 ---
 
 ## Command-Line Reference
@@ -360,6 +378,7 @@ Typically used to provide a mitochondrial haplotype that would not be contained 
 |------|---------|-------------|
 | `--distrib` | off | Write empirical scan distribution summary to `<prefix>.scan.summary.tsv` |
 | `--distrib-raw` | off | Also write raw reservoir sample to `<prefix>.scan.summary.reservoir.tsv` (implies `--distrib`) |
+| `--distrib-chr-pairs` | off | Also write the `--distrib` summary broken out per chromosome pair (or per chromosome for `--target-*`/`--sample-haplo`) to `<prefix>.scan.summary.by_chr_pair.tsv`; interchromosomal blocks only, see [Chromosome-Pair Distribution Summary](#chromosome-pair-distribution-summary---prefixscansummaryby_chr_pairtsv) |
 | `--distrib-sample INT` | 200000 | Reservoir sample size |
 | `--seed INT` | 1 | RNG seed for reservoir subsampling |
 
@@ -487,6 +506,8 @@ Blocks with fewer than `--fdr-min-pairs` pairs are skipped (marked `skipped` in 
 
 **`--distrib`/`--distrib-raw` with `--fdr`.** When either is set, a global reservoir of raw `r` values (not `z`, and not per-block) is also collected during pass 1 — which always runs, even for blocks later marked `skipped` — so `tested_pairs` in `<prefix>.scan.summary.tsv` matches the scan's total tested-pair count exactly, the same semantics as the plain `--min-abs-r` scan's distribution summary. This is a separate reservoir from the per-block calibration reservoir (`--fdr-sample`, drawn per chromosome-pair block from `z`); the two serve different purposes and are sampled independently.
 
+**`--distrib-chr-pairs` with `--fdr`.** A third, per-block reservoir of raw `r` values is collected during the same pass 1, independent of both the calibration reservoir and the global `--distrib` reservoir. Its stats are flushed to `<prefix>.scan.summary.by_chr_pair.tsv` as soon as each block finishes pass 1, rather than retained for the whole scan, so its memory cost doesn't grow with the number of chromosome pairs (see [Chromosome-Pair Distribution Summary](#chromosome-pair-distribution-summary---prefixscansummaryby_chr_pairtsv)).
+
 **`--target-chr`/`--target-pos` and `--sample-haplo` with `--fdr`.** The chromosome-pair block generalizes to a "one marker/vector vs one chromosome" block: the target marker (or the residualized `--sample-haplo` vector) plays the role of a size-1 "chrA", tested against each other chromosome's markers as its own block, calibrated and hit-called the same way. Output files use the same naming as the non-FDR versions (`<prefix>.hits.tsv` / `<prefix>.samplehaplo.hits.tsv`) with the `z`/`zstar`/`pvalue`/`qvalue`/`local_fdr` columns appended, and a `<prefix>.empirical_null.summary.tsv` / `<prefix>.samplehaplo.empirical_null.summary.tsv` calibration summary with one row per chromosome block (rather than per chromosome pair, since there's only ever one "side" varying). Works under both `--hi-mode global` and `--hi-mode excl-focus` (see below).
 
 **`--hi-mode excl-focus` (LOCO) with `--fdr`.** Each block is calibrated and hit-called exactly as in the global-HI case, except the block's residualized data is recomputed first, excluding the relevant chromosome(s) from the HI (the same per-block exclusion the non-FDR LOCO scans use; see [LOCO Mode](#loco-mode---hi-mode-excl-focus)):
@@ -503,7 +524,7 @@ In all three cases the LOCO residualization only depends on the block, not the p
 
 If `--intra --fdr` is used without `--min-dist`, a warning is printed: the nearest bin will include tightly-linked pairs, which may bias its own calibration.
 
-**`--target-chr`/`--target-pos` with `--intra` is additive**, matching the non-FDR target scan's `--intra` semantics: it does *not* restrict the scan to the target's own chromosome, it *adds* the target's own chromosome (distance-binned) to the usual interchromosomal-vs-every-other-chromosome scan. Internally this runs as two passes — the interchromosomal blocks (target vs. each other chromosome, own chromosome excluded) and the intrachromosomal distance-binned blocks (target vs. its own chromosome) — whose hits and calibration summaries are concatenated into the same `<prefix>.hits.tsv` / `<prefix>.empirical_null.summary.tsv`. `--distrib`/`--distrib-raw` in this combination only reflects the interchromosomal portion (a warning is printed) — merging two reservoirs sampled at different rates without bias requires weighting them by their respective tested-pair counts, which isn't implemented yet.
+**`--target-chr`/`--target-pos` with `--intra` is additive**, matching the non-FDR target scan's `--intra` semantics: it does *not* restrict the scan to the target's own chromosome, it *adds* the target's own chromosome (distance-binned) to the usual interchromosomal-vs-every-other-chromosome scan. Internally this runs as two passes — the interchromosomal blocks (target vs. each other chromosome, own chromosome excluded) and the intrachromosomal distance-binned blocks (target vs. its own chromosome) — whose hits and calibration summaries are concatenated into the same `<prefix>.hits.tsv` / `<prefix>.empirical_null.summary.tsv`. `--distrib`/`--distrib-raw` in this combination only reflects the interchromosomal portion (a warning is printed) — merging two reservoirs sampled at different rates without bias requires weighting them by their respective tested-pair counts, which isn't implemented yet. `--distrib-chr-pairs` has the same limitation here: it reports one row per interchromosomal block (every other chromosome), but not a row for the target's own chromosome, since the intrachromosomal distance-binned pass doesn't collect a per-block reservoir. This differs from the plain (non-FDR) target scan under `--intra`, where `--distrib-chr-pairs` does report the target's own chromosome as one more row alongside every other chromosome, because that scan handles both cases in the same per-chromosome loop.
 
 **`--sample-haplo` silently ignores `--intra`** with `--fdr`, exactly as it does without `--fdr`: the haplotype vector isn't tied to any chromosome, so there's no intrachromosomal/interchromosomal distinction to make for it.
 

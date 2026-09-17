@@ -140,6 +140,15 @@ Hybrid index weighting defaults to **unweighted** for `--vcf` input and **weight
 	--chr scaffold-ma1 \
 	--chr scaffold-ma2
 
+# Same as above, but also breaks the distribution summary out per chromosome
+# pair instead of one genome-wide aggregate (interchromosomal scans only)
+./build/admixld --vcf example_data_files/data.vcf.gz --out results \
+	--min-abs-r 0.5 \
+	--distrib \
+	--distrib-chr-pairs \
+	--chr scaffold-ma1 \
+	--chr scaffold-ma2
+
 # Interchromosomal scan writing hits with a minimum aboslute value of r
 # Filtered for chromosome 1 and chromosomme 2
 ./build/admixld --vcf example_data_files/data.vcf.gz --out results \
@@ -189,6 +198,7 @@ Hybrid index weighting defaults to **unweighted** for `--vcf` input and **weight
 | `<prefix>.hi.tsv` | When HI is computed | Per-sample hybrid index |
 | `<prefix>.scan.summary.tsv` | `--distrib` | Empirical scan distribution summary (quantiles, mean, SD) |
 | `<prefix>.scan.summary.reservoir.tsv` | `--distrib-raw` | Raw reservoir sample of r values (single column `r`) |
+| `<prefix>.scan.summary.by_chr_pair.tsv` | `--distrib-chr-pairs` | Same distribution summary as above, broken out per chromosome pair (interchromosomal scans only) |
 | `<prefix>.empirical_null.summary.tsv` | `--fdr` | Per-block empirical-null calibration summary (`mu0`, `sigma0`, `lambda`, `pi0`, hit counts) — one row per chromosome pair, chromosome, or chromosome/distance-bin, depending on scan mode |
 
 The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n` — plus `z`, `zstar`, `pvalue`, `qvalue`, `local_fdr` when `--fdr` is used, in place of a fixed `--min-abs-r` threshold. `--fdr` works with `--intra`, `--target-chr`/`--target-pos`, `--sample-haplo`, and `--hi-mode excl-focus` (LOCO), including combinations of these. See [documentation.md](documentation.md#empirical-null-fdr) for the method.
