@@ -287,6 +287,21 @@ Each block's reservoir is sampled and dropped independently as soon as that bloc
 
 Not supported under `--intra`: intrachromosomal scans have no chromosome-pair blocks for the plain marker/marker scan (a warning is printed and only a header row is written). `--target-chr`/`--target-pos` under `--intra` still reports the usual per-chromosome rows for every other chromosome, since target-vs-chromosome blocks exist independently of `--intra`; the plain (non-FDR) target scan additionally reports the target's own chromosome as one more row, but the FDR target scan does not, since its distance-binned intrachromosomal pass doesn't collect a per-block reservoir (see [`--target-chr`/`--target-pos` with `--intra` is additive](#empirical-null-fdr)). `--sample-haplo` is unaffected by `--intra` either way, since a sample-level vector has no chromosome of its own.
 
+### Heatmap — `<prefix>.heatmap.tsv`
+
+Written when `--heatmap` is used, in place of `<prefix>.hits.tsv`. Marker pairs are binned by genomic position into `--heatmap-bin-size`-bp bins along both axes; each row is one non-empty `(chrA, binA)` x `(chrB, binB)` cell.
+
+| Column | Description |
+|--------|-------------|
+| `chrA`, `chrB` | Chromosome of each side of the bin pair (equal for intrachromosomal bin pairs) |
+| `binA_start`, `binA_end` | Half-open bin range `[start, end)` in bp for the `chrA` side |
+| `binB_start`, `binB_end` | Half-open bin range `[start, end)` in bp for the `chrB` side |
+| `n_pairs` | Exact number of marker pairs tested in this bin pair |
+| `mean_r`, `sd_r` | Exact mean and SD of `r` over every pair in the bin pair (not sampled) |
+| `quantile_r` | Approximate `--heatmap-quantile` (default 0.99) of `r`, from a bounded per-bin-pair reservoir — see [Heatmap Mode](#heatmap-mode) |
+
+For intrachromosomal bin pairs, `binA_start <= binB_start` (markers are visited in ascending position order, so a diagonal cell with `binA == binB` holds pairs within the same bin). For interchromosomal bin pairs, `chrA`/`chrB` reflect whichever chromosome played each role in that scan block and carry no other meaning.
+
 ---
 
 ## Command-Line Reference
@@ -382,6 +397,19 @@ Typically used to provide a mitochondrial haplotype that would not be contained 
 | `--distrib-sample INT` | 200000 | Reservoir sample size |
 | `--seed INT` | 1 | RNG seed for reservoir subsampling |
 
+### Heatmap
+
+`--heatmap` is a **standalone scan mode**, not an add-on to the hit-calling scan: it bins marker pairs by genomic position and reports one row per non-empty bin pair (mean, SD, and an upper quantile of `r`) instead of writing every tested pair to `<prefix>.hits.tsv`. It is intended to make LD-heatmap plots feasible at genome scale, where writing every pair would be impractical. See [Heatmap Mode](#heatmap-mode) for the method.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--heatmap` | off | Bin marker pairs by genomic position and write `<prefix>.heatmap.tsv` instead of running the pairwise hit-calling scan |
+| `--heatmap-bin-size INT` | 1000000 | Bin width in bp (applied along both axes, for both intra- and interchromosomal bin pairs) |
+| `--heatmap-quantile FLOAT` | 0.99 | Upper quantile of `r` reported per bin pair (approximate; see below) |
+| `--heatmap-reservoir INT` | 2000 | Per-bin-pair reservoir cap used to approximate `--heatmap-quantile` |
+
+`--heatmap` supports `--intra`, `--max-dist`/`--min-dist`, `--hi-mode excl-focus` (LOCO), `--chr`/`--no-chr`/`--bed`, `--keep-indv`, `--ref-freq`, and `--cov`, mirroring the plain marker/marker scan. It is **not** supported with `--target-chr`/`--target-pos` or `--sample-haplo` (error). Since it is a separate scan mode from hit calling, `--min-abs-r`/`--min-neg-r`/`--min-pos-r`/`--fdr` and `--distrib`/`--distrib-raw`/`--distrib-chr-pairs` are ignored with a warning when combined with `--heatmap`: run a hit-calling scan and a `--heatmap` scan as separate invocations if you want both.
+
 ### Performance
 
 | Flag | Default | Description |
@@ -465,6 +493,19 @@ $$r_{AB} = \frac{1}{n-1} \sum_i Z_{Ai} \cdot Z_{Bi}$$
 **Intrachromosomal** (`--intra`): all pairs from the same chromosome, optionally bounded to `--min-dist`–`--max-dist` bp.
 
 Matrix multiplication is tiled (default tile size 1024) for cache efficiency with large marker sets.
+
+### Heatmap Mode (`--heatmap`)
+
+`--heatmap` replaces the pairwise hit-calling scan with a binned scan: instead of writing every tested pair, markers are assigned to `--heatmap-bin-size`-bp genomic bins, and every tested `r` is folded into the accumulator for its `(chrA, binA)` x `(chrB, binB)` cell as the same tiled correlation matrix (see [Correlation Scanning](#correlation-scanning) above) is computed. This is what keeps `--heatmap`'s memory and output size bounded by the number of genomic bins rather than the number of marker pairs, which is what makes genome-scale LD heatmaps practical without ever materializing the full pairwise output.
+
+Each cell tracks two statistics, computed together in the same pass:
+
+- **`mean_r`/`sd_r`**: an exact running mean/SD (Welford's algorithm) over every pair that falls in the cell. This costs O(1) memory per cell regardless of how many pairs land in it.
+- **`quantile_r`**: the requested upper quantile (`--heatmap-quantile`, default 0.99) of `r` within the cell, estimated from a bounded reservoir sample of up to `--heatmap-reservoir` (default 2000) values per cell (Algorithm R, the same reservoir-sampling technique `--distrib`/`--fdr` use elsewhere in AdmixLD). This is an approximation: an exact per-cell quantile would require retaining every `r` that falls in the cell, which is exactly the memory cost `--heatmap` exists to avoid. Cells with fewer pairs than the reservoir cap have an exact quantile; cells with more are a uniform random subsample.
+
+Each block (one chromosome for `--intra`, one chromosome pair otherwise) accumulates its own cells locally and flushes them to disk as soon as the block finishes — the same immediate-flush design `--distrib-chr-pairs` uses — so memory is bounded by the cells touched by one in-flight block per thread, not by the whole genome's worth of bins. Choose `--heatmap-bin-size` with this in mind: too small a bin size for a large genome produces a large number of bins (and a correspondingly large `<prefix>.heatmap.tsv`), which works against the point of the feature.
+
+`--heatmap` works with `--intra`/`--max-dist`/`--min-dist` and `--hi-mode excl-focus` (LOCO) exactly as the plain marker/marker scan does; under LOCO, each block's HI/residualization is recomputed excluding the relevant chromosome(s), same as [LOCO Mode](#loco-mode---hi-mode-excl-focus) below. It is **not** supported for `--target-chr`/`--target-pos` or `--sample-haplo` scans. Because it is a wholly separate scan mode from hit calling (see [Heatmap](#heatmap) above), it does not combine with `--fdr`'s empirical-null calibration in this version.
 
 ### LOCO Mode (`--hi-mode excl-focus`)
 

@@ -187,6 +187,21 @@ Hybrid index weighting defaults to **unweighted** for `--vcf` input and **weight
 
 # Compute hybrid index only and exit
 ./build/admixld --vcf data.vcf.gz --out results --compute-hi
+
+# Genome-wide interchromosomal heatmap: bins marker pairs into 1Mb x 1Mb
+# genomic bins and reports mean/quantile LD per bin pair instead of writing
+# every tested pair (standalone mode: no hits.tsv is written)
+./build/admixld --vcf example_data_files/data.vcf.gz --out results \
+	--heatmap \
+	--heatmap-bin-size 1000000
+
+# Intrachromosomal heatmap with LOCO (leave-one-chromosome-out) residualization
+./build/admixld --vcf example_data_files/data.vcf.gz --out results \
+	--heatmap \
+	--heatmap-bin-size 1000000 \
+	--intra \
+	--hi-mode excl-focus \
+	--chr scaffold-ma1
 ```
 ---
 
@@ -200,6 +215,7 @@ Hybrid index weighting defaults to **unweighted** for `--vcf` input and **weight
 | `<prefix>.scan.summary.reservoir.tsv` | `--distrib-raw` | Raw reservoir sample of r values (single column `r`) |
 | `<prefix>.scan.summary.by_chr_pair.tsv` | `--distrib-chr-pairs` | Same distribution summary as above, broken out per chromosome pair (interchromosomal scans only) |
 | `<prefix>.empirical_null.summary.tsv` | `--fdr` | Per-block empirical-null calibration summary (`mu0`, `sigma0`, `lambda`, `pi0`, hit counts) — one row per chromosome pair, chromosome, or chromosome/distance-bin, depending on scan mode |
+| `<prefix>.heatmap.tsv` | `--heatmap` | Per-genomic-bin-pair mean/quantile LD, in place of `<prefix>.hits.tsv` (standalone scan mode) |
 
 The hits file columns are: `wA`, `chrA`, `posA`, `wB`, `chrB`, `posB`, `r`, `n` — plus `z`, `zstar`, `pvalue`, `qvalue`, `local_fdr` when `--fdr` is used, in place of a fixed `--min-abs-r` threshold. `--fdr` works with `--intra`, `--target-chr`/`--target-pos`, `--sample-haplo`, and `--hi-mode excl-focus` (LOCO), including combinations of these. See [documentation.md](documentation.md#empirical-null-fdr) for the method.
 

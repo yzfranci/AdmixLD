@@ -22,6 +22,7 @@
 #include "core/residualize.hpp"
 #include "core/scan_markers.hpp"
 #include "core/scan_dynamic_hi.hpp"
+#include "core/heatmap.hpp"
 #include "config.hpp"
 
 /*
@@ -78,7 +79,13 @@ static void usage() {
 	<< "  --fdr-lambda FLOAT     Storey pi0 tail cutoff (default: 0.5)\n"
 	<< "  --fdr-intra-bins INT   --fdr --intra only: number of log-spaced distance bins per chromosome (default: 8)\n"
 	<< "  --sample-haplo FILE    Per-sample mitochondrial haplotype TSV: sample<TAB>value (0 or 1 only; missing allowed)\n"
-	<< "  --keep-indv FILE       Keep only samples listed in FILE (one ID per line)\n";
+	<< "  --keep-indv FILE       Keep only samples listed in FILE (one ID per line)\n"
+		<< "  --heatmap              Bin marker pairs by genomic position and write per-bin-pair mean/quantile LD\n"
+		<< "                         instead of a scan (standalone mode: no hits.tsv; --min-abs-r/--min-neg-r/\n"
+		<< "                         --min-pos-r/--fdr/--distrib*/--target-*/--sample-haplo are not supported with it)\n"
+		<< "  --heatmap-bin-size INT Bin width in bp for --heatmap (default: 1000000)\n"
+		<< "  --heatmap-quantile FLOAT  Upper quantile reported per bin for --heatmap (default: 0.99)\n"
+		<< "  --heatmap-reservoir INT   Per-bin reservoir cap used to approximate --heatmap-quantile (default: 2000)\n";
 }
 
 struct CliOptions {
@@ -139,6 +146,11 @@ struct CliOptions {
 	long long fdr_min_pairs = 500;
 	double fdr_lambda = 0.5;
 	int fdr_intra_bins = 8;
+
+	bool heatmap = false;
+	long long heatmap_bin_size = 1000000;
+	double heatmap_quantile = 0.99;
+	int heatmap_reservoir = 2000;
 };
 
 static bool parse_args(int argc, char** argv, CliOptions& opt) {
@@ -278,6 +290,18 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 
 		} else if (a == "--fdr-intra-bins" && i + 1 < argc) {
 			opt.fdr_intra_bins = std::stoi(argv[++i]);
+
+		} else if (a == "--heatmap") {
+			opt.heatmap = true;
+
+		} else if (a == "--heatmap-bin-size" && i + 1 < argc) {
+			opt.heatmap_bin_size = std::stoll(argv[++i]);
+
+		} else if (a == "--heatmap-quantile" && i + 1 < argc) {
+			opt.heatmap_quantile = std::stod(argv[++i]);
+
+		} else if (a == "--heatmap-reservoir" && i + 1 < argc) {
+			opt.heatmap_reservoir = std::stoi(argv[++i]);
 
 		} else {
 			std::cerr << "Unknown/invalid arg: " << a << "\n";
@@ -433,6 +457,42 @@ static int validate_options(const CliOptions& opt) {
 		if (opt.fdr_lambda < 0.0 || opt.fdr_lambda >= 1.0) {
 			std::cerr << "Error: --fdr-lambda must be in [0, 1)\n";
 			return 2;
+		}
+	}
+
+	if (opt.heatmap) {
+		if (opt.has_target) {
+			std::cerr << "Error: --heatmap is not supported with --target-chr/--target-pos\n";
+			return 2;
+		}
+		if (!opt.sample_haplo_path.empty()) {
+			std::cerr << "Error: --heatmap is not supported with --sample-haplo\n";
+			return 2;
+		}
+		if (opt.heatmap_bin_size <= 0) {
+			std::cerr << "Error: --heatmap-bin-size must be > 0\n";
+			return 2;
+		}
+		if (opt.heatmap_quantile <= 0.0 || opt.heatmap_quantile >= 1.0) {
+			std::cerr << "Error: --heatmap-quantile must be in (0, 1)\n";
+			return 2;
+		}
+		if (opt.heatmap_reservoir <= 0) {
+			std::cerr << "Error: --heatmap-reservoir must be > 0\n";
+			return 2;
+		}
+		if (opt.min_abs_r > 0.0 || opt.has_min_neg_r || opt.has_min_pos_r || opt.has_fdr) {
+			std::cerr << "Warning: --heatmap is a standalone scan mode; --min-abs-r/--min-neg-r/--min-pos-r/--fdr "
+			             "are ignored (no hits file is written). Run a hit-calling scan and --heatmap as "
+			             "separate invocations.\n";
+		}
+		if (opt.distrib || opt.distrib_raw || opt.distrib_chr_pairs) {
+			std::cerr << "Warning: --distrib/--distrib-raw/--distrib-chr-pairs are ignored in --heatmap mode "
+			             "(heatmap mode does not run the pairwise hit-calling scan).\n";
+		}
+	} else {
+		if (opt.heatmap_bin_size != 1000000 || opt.heatmap_quantile != 0.99 || opt.heatmap_reservoir != 2000) {
+			std::cerr << "Warning: --heatmap-bin-size/--heatmap-quantile/--heatmap-reservoir have no effect without --heatmap\n";
 		}
 	}
 
@@ -1215,6 +1275,62 @@ int main(int argc, char** argv) {
 	std::cout << "  valid_markers = " << n_valid_markers << " / " << nmarkers << "\n";
 	print_residualization_sanity(Z);
 	std::cout << std::flush;
+
+	// Stage 10: --heatmap standalone mode. Bins marker pairs by genomic
+	// position and writes per-bin-pair mean/quantile LD instead of running
+	// the pairwise hit-calling scan; no hits.tsv/fdr summary is written
+	// (see validate_options for why --min-abs-r/--fdr are ignored here).
+	if (cli.heatmap) {
+		HeatmapOptions hopt;
+		hopt.intra = cli.intra;
+		hopt.max_dist = cli.max_dist;
+		hopt.min_dist = cli.min_dist;
+		hopt.tile_size = cli.tile_size;
+		hopt.nsamples = (int)Z.rows();
+		hopt.threads = cli.threads;
+		hopt.bin_size = cli.heatmap_bin_size;
+		hopt.quantile = cli.heatmap_quantile;
+		hopt.reservoir_size = cli.heatmap_reservoir;
+		hopt.seed = cli.seed;
+
+		const std::string heatmap_out_path = cli.out + ".heatmap.tsv";
+		long long heatmap_tested = 0;
+
+		std::cout << "Scan mode: heatmap (" << (cli.intra ? "intrachromosomal" : "interchromosomal") << ")\n";
+
+		bool scan_ok;
+		if (cli.hi_mode == "global") {
+			scan_ok = scan_markers_write_heatmap(
+				Z, chroms, pos, markers_by_chr, chr_order, hopt, heatmap_out_path, heatmap_tested
+			);
+		} else {
+			if (!has_hc_full) {
+				std::cerr << "Error: HI components missing for excl-focus mode\n";
+				return 1;
+			}
+			if (use_ref_freq) {
+				scan_ok = scan_markers_write_heatmap_excl_focus(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_freq_full, hopt, heatmap_out_path, heatmap_tested, freqs_scan
+				);
+			} else {
+				scan_ok = scan_markers_write_heatmap_excl_focus(
+					X, chroms, pos, markers_by_chr, chr_order,
+					hc_full, hopt, heatmap_out_path, heatmap_tested
+				);
+			}
+		}
+		if (!scan_ok)
+			return 1;
+
+		std::cout << "Heatmap scan complete:\n";
+		std::cout << "  tested_pairs = " << heatmap_tested << "\n";
+		std::cout << "  bin_size     = " << cli.heatmap_bin_size << "\n";
+		std::cout << "  quantile     = " << cli.heatmap_quantile << "\n";
+		std::cout << "  wrote        = " << heatmap_out_path << "\n";
+
+		return 0;
+	}
 
 	// Stage 11: Final scan options (including asymmetric filtering)
 	bool use_asym = false;
