@@ -185,6 +185,15 @@ Hybrid index weighting defaults to **unweighted** for `--vcf` input and **weight
 	--fdr-intra-bins 8 \
 	--chr scaffold-ma1
 
+# Interchromosomal scan on SNPs thinned to at most one per 10kb; with
+# --ref-freq, the most informative SNP (largest |p1 - p2|) in each stretch is
+# kept, after dropping SNPs with |p1 - p2| < 0.5
+./build/admixld --vcf example_data_files/data.vcf.gz --out results \
+	--ref-freq parental_freqs.tsv \
+	--min-delta-afd 0.5 \
+	--thin 10000 \
+	--min-abs-r 0.5
+
 # Compute hybrid index only and exit
 ./build/admixld --vcf data.vcf.gz --out results --compute-hi
 

@@ -73,6 +73,7 @@ static void usage() {
 		<< "  --target-pos INT       Scan one target marker/pos vs all others (target position; matches single position)\n"
 		<< "  --ref-freq FILE        Parental allele frequency file (TSV: chrom pos p1 p2); VCF only\n"
 	<< "  --min-delta-afd FLOAT  Min |p1-p2| for --ref-freq markers (default: 0; dropped if below)\n"
+	<< "  --thin INT             VCF only: keep scan markers >= INT bp apart (most informative |p1-p2| kept with --ref-freq, else first site; applied after --min-delta-afd)\n"
 	<< "  --fdr FLOAT            Empirical-null + Storey q-value hit calling (target q-value); replaces --min-abs-r/--min-neg-r/--min-pos-r; --intra supported (additive for --target-*, ignored for --sample-haplo)\n"
 	<< "  --fdr-sample INT       Per-block reservoir size for empirical-null calibration (default: 200000)\n"
 	<< "  --fdr-min-pairs INT    Minimum pairs in a block to attempt calibration (default: 500)\n"
@@ -107,6 +108,9 @@ struct CliOptions {
 	std::string keep_indv_path;
 	std::string ref_freq_path;
 	float min_delta_afd = 0.0f;
+
+	bool has_thin = false;
+	int thin = 0;
 
 	std::string hi_mode = "global";	// global | excl-focus
 
@@ -267,6 +271,10 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 		} else if (a == "--min-delta-afd" && i + 1 < argc) {
 			opt.min_delta_afd = std::stof(argv[++i]);
 
+		} else if (a == "--thin" && i + 1 < argc) {
+			opt.thin = std::stoi(argv[++i]);
+			opt.has_thin = true;
+
 		} else if (a == "--min-neg-r" && i + 1 < argc) {
 			opt.min_neg_r = std::stof(argv[++i]);
 			opt.has_min_neg_r = true;
@@ -401,6 +409,17 @@ static int validate_options(const CliOptions& opt) {
 	if (opt.min_delta_afd < 0.0f) {
 		std::cerr << "Error: --min-delta-afd must be >= 0\n";
 		return 2;
+	}
+
+	if (opt.has_thin) {
+		if (opt.thin < 1) {
+			std::cerr << "Error: --thin must be >= 1\n";
+			return 2;
+		}
+		if (opt.vcf_path.empty()) {
+			std::cerr << "Error: --thin is only supported with --vcf\n";
+			return 2;
+		}
 	}
 
 	if (opt.has_min_dist) {
@@ -700,6 +719,136 @@ static bool apply_callrate_filter(
 		for (int j = 0; j < nmarkers2; ++j)
 			pos_start_f[j] = pos_start[(size_t)keep_idx[j]];
 		pos_start.swap(pos_start_f);
+	}
+
+	return true;
+}
+
+// Greedy per chromosome: starting from the first unprocessed site, keep the
+// site with the largest |p1-p2| among those less than `thin` bp away (first
+// one on ties, or simply the first site without --ref-freq), then resume at
+// the first site at least `thin` bp past the kept one. Kept sites are
+// therefore always >= thin bp apart.
+// If target_chr/target_pos name a marker, it is always kept: markers less
+// than `thin` bp from it are dropped and each side is thinned independently.
+static bool apply_thin_filter(
+	Eigen::MatrixXf& X,
+	std::vector<std::string>& chroms,
+	std::vector<int>& pos,
+	std::vector<int>& pos_start,
+	std::vector<MarkerFreq>& freqs,
+	int thin,
+	const std::string& target_chr,
+	int target_pos
+) {
+	const int nrows = (int)X.rows();
+	const int nmarkers = (int)chroms.size();
+	const bool use_freqs = !freqs.empty();
+
+	auto afd = [&](int w) -> float { return std::fabs(freqs[(size_t)w].p1 - freqs[(size_t)w].p2); };
+
+	std::vector<std::string> chr_order;
+	auto by_chr = group_by_chr(chroms, chr_order);
+
+	std::vector<int> keep_idx;
+	keep_idx.reserve((size_t)nmarkers);
+
+	auto thin_run = [&](const std::vector<int>& run) {
+		const int m = (int)run.size();
+		int i = 0;
+		while (i < m) {
+			int best = i;
+			if (use_freqs) {
+				const long long window_end = (long long)pos[run[i]] + thin;
+				for (int j = i + 1; j < m && pos[run[j]] < window_end; ++j) {
+					if (afd(run[j]) > afd(run[best]))
+						best = j;
+				}
+			}
+			keep_idx.push_back(run[best]);
+
+			const long long next_min = (long long)pos[run[best]] + thin;
+			i = best + 1;
+			while (i < m && pos[run[i]] < next_min)
+				++i;
+		}
+	};
+
+	bool target_kept = false;
+
+	for (const auto& chr : chr_order) {
+		auto& idx = by_chr[chr];
+		std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return pos[a] < pos[b]; });
+
+		int t = -1;
+		if (target_pos >= 0 && chr == target_chr) {
+			for (int k = 0; k < (int)idx.size(); ++k) {
+				if (pos[idx[k]] == target_pos) {
+					t = k;
+					break;
+				}
+			}
+		}
+
+		if (t < 0) {
+			thin_run(idx);
+			continue;
+		}
+
+		std::vector<int> left;
+		std::vector<int> right;
+		for (int w : idx) {
+			if ((long long)pos[w] <= (long long)target_pos - thin)
+				left.push_back(w);
+			else if ((long long)pos[w] >= (long long)target_pos + thin)
+				right.push_back(w);
+		}
+
+		thin_run(left);
+		keep_idx.push_back(idx[t]);
+		thin_run(right);
+		target_kept = true;
+	}
+
+	std::sort(keep_idx.begin(), keep_idx.end());
+
+	std::cout << "Thinning (--thin " << thin << (use_freqs ? ", most informative |p1-p2| kept" : ", first site kept") << "):\n";
+	std::cout << "  before = " << nmarkers << "\n";
+	std::cout << "  after  = " << (int)keep_idx.size() << "\n";
+	if (target_kept)
+		std::cout << "  target " << target_chr << ":" << target_pos << " always kept (thinned around)\n";
+
+	if ((int)keep_idx.size() == nmarkers)
+		return true;
+
+	const int nmarkers2 = (int)keep_idx.size();
+	Eigen::MatrixXf Xf(nrows, nmarkers2);
+	std::vector<std::string> chroms_f((size_t)nmarkers2);
+	std::vector<int> pos_f((size_t)nmarkers2);
+
+	for (int j = 0; j < nmarkers2; ++j) {
+		int w = keep_idx[j];
+		Xf.col(j) = X.col(w);
+		chroms_f[j] = chroms[w];
+		pos_f[j] = pos[w];
+	}
+
+	X.swap(Xf);
+	chroms.swap(chroms_f);
+	pos.swap(pos_f);
+
+	if (!pos_start.empty()) {
+		std::vector<int> pos_start_f((size_t)nmarkers2);
+		for (int j = 0; j < nmarkers2; ++j)
+			pos_start_f[j] = pos_start[(size_t)keep_idx[j]];
+		pos_start.swap(pos_start_f);
+	}
+
+	if (use_freqs) {
+		std::vector<MarkerFreq> freqs_f((size_t)nmarkers2);
+		for (int j = 0; j < nmarkers2; ++j)
+			freqs_f[j] = freqs[(size_t)keep_idx[j]];
+		freqs.swap(freqs_f);
 	}
 
 	return true;
@@ -1092,6 +1241,13 @@ int main(int argc, char** argv) {
 		}
 		int n_flipped = polarize_X(X, freqs_scan, cli.phased);
 		std::cout << "Polarized " << n_flipped << " / " << nkeep << " scan markers (p2 > p1)\n";
+	}
+
+	// Stage 3c2: Thin scan markers (after --min-delta-afd, so only surviving markers compete)
+	if (cli.has_thin) {
+		if (!apply_thin_filter(X, chroms, pos, pos_start, freqs_scan, cli.thin,
+		                       cli.target_chr, (cli.has_target && !sample_haplo_mode) ? cli.target_pos : -1))
+			return 1;
 	}
 
 	// Stage 3d: Apply sample filter (--keep-indv) before HI and residualization

@@ -366,9 +366,19 @@ LOCO (leave-one-chromosome-out) can be used to compute HI without the focus chro
 | `--no-chr STR` | none | Exclude this chromosome (repeatable) |
 | `--bed FILE` | none | Keep only markers within BED intervals |
 | `--min-callrate FLOAT` | 1.0 | Minimum call-rate to retain a marker; enables mean imputation if < 1.0 |
+| `--thin INT` | off | `--vcf` only: keep scanned markers at least INT bp apart (see below) |
 | `--keep-indv FILE` | all | Keep only samples listed in FILE (one ID per line) for the correlation scan; residualization uses the full set |
 
 Be sure to use --min-callrate for loci that still have a decent amount of data (<10% missing), as it can introduce bias due to mean imputation.
+
+**`--thin INT`** keeps at most one marker per INT bp, so that no two scanned markers are closer than INT bp. It is applied last among the marker filters, after `--chr`/`--no-chr`/`--bed`, `--min-callrate`, and the `--ref-freq`/`--min-delta-afd` filter, so only markers that passed those filters compete. On each chromosome, starting from the first remaining marker, one marker is kept from those less than INT bp away:
+
+- With `--ref-freq`: the marker with the largest |p1 − p2| is kept. If several are tied (e.g. several markers with |p1 − p2| = 1), the first one is kept.
+- Without `--ref-freq`: the first marker is kept, which is the same as vcftools `--thin`.
+
+Thinning then picks up again at the first marker at least INT bp past the one just kept.
+
+Like `--min-delta-afd`, `--thin` only affects the markers being scanned. The HI and the LOCO components are still computed from the full marker set. The one exception is `--compute-hi` without `--ref-freq`, which computes HI from the filtered markers, so there it uses the thinned set. A `--target-chr`/`--target-pos` marker is never thinned out. On the target's chromosome the target is always kept, markers less than INT bp from it are dropped, and the markers on each side of it are thinned as described above, so kept markers are still at least INT bp apart. The earlier filters (`--chr`/`--bed`/`--min-callrate`/`--min-delta-afd`) can still remove the target, which gives the usual "target marker not found after filtering" error. Not supported with `--msp` (error).
 
 ### Target Marker
 
