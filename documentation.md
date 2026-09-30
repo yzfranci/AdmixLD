@@ -212,7 +212,7 @@ When `--fdr` is used, five additional columns are appended (see [Empirical-Null 
 | `z`         | Fisher z-transform of `r` (`atanh(r)`) |
 | `zstar`     | `z` recalibrated against the block's fitted empirical null: `(z - mu0) / sigma0` |
 | `pvalue`    | One-sided p-value against the empirical null (tail-appropriate) |
-| `qvalue`    | Storey q-value; the primary hit-calling statistic (`--fdr` threshold) |
+| `qvalue`    | Storey q-value from the pair's exact rank in its block; the primary hit-calling statistic (`--fdr` threshold) |
 | `local_fdr` | Efron local fdr; secondary per-pair ranking/confidence score |
 
 ### Empirical-Null Summary — `<prefix>.empirical_null.summary.tsv`
@@ -334,7 +334,7 @@ When either asymmetric filter (`--min-neg-r` or `--min-pos-r`) is set, `--min-ab
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--fdr FLOAT` | — | Target Storey q-value for hit calling; replaces `--min-abs-r`/`--min-neg-r`/`--min-pos-r` as the hit-calling rule |
-| `--fdr-sample INT` | 200000 | Per-block reservoir size used to fit the empirical null |
+| `--fdr-sample INT` | 200000 | Per-block reservoir size used to fit the empirical null; also how many of the most extreme pairs per tail are ranked exactly when calling hits |
 | `--fdr-min-pairs INT` | 500 | Minimum pairs in a block required to attempt calibration; smaller blocks are skipped (no hits) |
 | `--fdr-lambda FLOAT` | 0.5 | Storey pi0 tail-flatness cutoff |
 | `--fdr-intra-bins INT` | 8 | `--fdr --intra` only: number of log-spaced distance bins per chromosome for calibration stratification |
@@ -405,7 +405,7 @@ Typically used to provide a mitochondrial haplotype that would not be contained 
 | `--distrib-raw` | off | Also write raw reservoir sample to `<prefix>.scan.summary.reservoir.tsv` (implies `--distrib`) |
 | `--distrib-chr-pairs` | off | Also write the `--distrib` summary broken out per chromosome pair (or per chromosome for `--target-*`/`--sample-haplo`) to `<prefix>.scan.summary.by_chr_pair.tsv`; interchromosomal blocks only, see [Chromosome-Pair Distribution Summary](#chromosome-pair-distribution-summary---prefixscansummaryby_chr_pairtsv) |
 | `--distrib-sample INT` | 200000 | Reservoir sample size |
-| `--seed INT` | 1 | RNG seed for reservoir subsampling |
+| `--seed INT` | 1 | RNG seed for reservoir subsampling (`--distrib*` and the `--fdr` calibration reservoirs) |
 
 ### Heatmap
 
@@ -543,13 +543,17 @@ For each chromosome-pair block, AdmixLD makes two passes over the block's marker
 
 - The empirical null location and scale are estimated robustly: `mu0 = median(z)`, `sigma0 = 1.4826 * median(|z - mu0|)`.
 - `lambda = sigma0 * sqrt(n - 3)` reports the inflation of the fitted null relative to the theoretical null (`1/sqrt(n-3)`); `lambda ~= 1` means no excess background structure, `lambda >> 1` quantifies unmodeled confounding directly. This `lambda` is purely diagnostic: it is derived from `sigma0` for reporting purposes only and does not itself feed into `zstar`, the p-values, or the q-value/hit-calling thresholds below (those are computed directly from `mu0`/`sigma0`).
-- Each reservoir point is recalibrated to `zstar = (z - mu0) / sigma0`, converted to one-sided p-values `p_pos = 1 - Phi(zstar)` and `p_neg = Phi(zstar)` (recalibration is done **per tail** rather than pooled two-sided, since the fitted null is not always exactly symmetric around zero).
-- Storey's pi0 (proportion of true nulls) is estimated independently per tail from p-value tail flatness above `--fdr-lambda`, and Storey q-values are computed directly on the reservoir. Because the reservoir is an unbiased uniform subsample of the block, running the standard q-value procedure on it (as if it were the full dataset) is asymptotically equivalent to running it on every pair in the block — this is what keeps the method's memory footprint bounded regardless of block size.
+- Each reservoir point is recalibrated to `zstar = (z - mu0) / sigma0`, converted to one-sided p-values `p_pos = Phi(-zstar)` and `p_neg = Phi(zstar)` (recalibration is done **per tail** rather than pooled two-sided, since the fitted null is not always exactly symmetric around zero). Both are computed directly from the normal tail, so they keep full precision far out in either tail.
+- Storey's pi0 (proportion of true nulls) is estimated independently per tail from p-value tail flatness above `--fdr-lambda`. Because `mu0` is the reservoir median, exactly half the reservoir lies on each side of it, so at the default `--fdr-lambda 0.5` both pi0 estimates are 1 and the procedure reduces to Benjamini–Hochberg.
 
   Note: this `--fdr-lambda` (Storey's pi0 tail-flatness cutoff) is unrelated to the inflation-factor `lambda` reported above. 
-- The critical p-value/`zstar` threshold achieving the requested `--fdr` is recorded per tail.
+- Storey q-values are also computed on the reservoir, using each point's rank within the reservoir in place of its rank in the block. This estimate is good in the bulk of the distribution but not in the far tail, where the hits are: a 200,000-pair reservoir drawn from a 10,000,000-pair block keeps one pair in 50, so a tail of a few dozen real signals is represented by zero to a handful of points, and the estimated q-values jump in large steps depending on which of them happened to be sampled. Pass 2 therefore ranks the tail exactly and only falls back on these reservoir q-values beyond it.
 
-**Pass 2 — hit calling.** The block is rescanned; each pair's `zstar` is compared against the fitted per-tail thresholds. Pairs clearing either threshold are written to `<prefix>.hits.tsv` with `z`, `zstar`, `pvalue`, `qvalue` (the primary decision statistic — interpolated from pass 1's reservoir-derived q-value curve), and `local_fdr` (Efron's local false discovery rate, a secondary per-pair ranking/confidence score derived from a separate two-sided density-ratio pi0 estimate).
+**Pass 2 — hit calling.** The block is rescanned. For each tail, the `--fdr-sample` most extreme pairs of the whole block (by `zstar`) are kept in a bounded heap. When the block is done, each kept pair gets a Storey q-value from its exact rank `k` among all `n_pairs` pairs of the block, `q = pi0 * n_pairs * p / k`, made monotone from the least extreme kept pair upwards. Pairs with `q <= --fdr` are written to `<prefix>.hits.tsv` with `z`, `zstar`, `pvalue`, `qvalue` (the primary decision statistic), and `local_fdr` (Efron's local false discovery rate, a secondary per-pair ranking/confidence score derived from a separate two-sided density-ratio pi0 estimate).
+
+When a tail's hits fit within its `--fdr-sample` most extreme pairs, which is the usual case, the hits and q-values are those of the Storey procedure applied to every pair in the block; the reservoir only supplies the fitted null (`mu0`, `sigma0`, pi0) and the q-value just past the kept set. Only when a tail has more hits than that do the pairs beyond the kept set fall back on pass 1's reservoir q-values: such a pair is a hit if it is at least as extreme as the least extreme reservoir point with q at or below `--fdr`, and its `qvalue` is that of the nearest reservoir point no more extreme than it. Memory stays bounded either way, at one reservoir and two heaps of at most `--fdr-sample` pairs per block being scanned.
+
+Each block's reservoir is drawn from its own random stream, derived from `--seed` and the block, so the fitted null and the hits don't depend on `--threads` or on which thread happens to scan which block. Rows in `<prefix>.hits.tsv` are grouped by block in the order blocks finish, which can differ between runs with more than one thread.
 
 A per-block calibration summary is written to `<prefix>.empirical_null.summary.tsv` (see [Empirical-Null Summary](#empirical-null-summary---prefixempirical_nullsummarytsv)).
 

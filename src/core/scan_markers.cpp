@@ -719,9 +719,6 @@ static bool scan_markers_write_hits_fdr_intra(
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
 	std::vector<long long> kept_t((size_t)nthreads, 0);
-	std::vector<std::mt19937_64> rngs((size_t)nthreads);
-	for (int t = 0; t < nthreads; ++t)
-		rngs[(size_t)t] = std::mt19937_64(seed + (uint64_t)t);
 
 	struct ThreadDistrib {
 		long long tested_pairs = 0;
@@ -838,7 +835,7 @@ static bool scan_markers_write_hits_fdr_intra(
 		long long m_local = 0;
 		std::vector<double> reservoir;
 		reservoir.reserve((size_t)rsample);
-		auto& rng = rngs[(size_t)tid];
+		auto rng = fdr_block_rng(seed, (uint64_t)j);
 
 		for_each_pair([&](int, int, float r) {
 			++m_local;
@@ -873,45 +870,28 @@ static bool scan_markers_write_hits_fdr_intra(
 		});
 
 		NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
+		FdrBlockCaller caller(fit, rsample);
 
-		long long kept_local = 0;
-		long long hits_pos = 0, hits_neg = 0;
-
-		// Pass 2: apply the fitted per-tail zstar thresholds and write hits.
+		// Pass 2: rank the block's most extreme pairs exactly and write hits.
 		if (fit.ok && m_local >= opt.fdr_min_pairs) {
-			for_each_pair([&](int a, int b, float r) {
-				float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
-				double z = std::atanh((double)rc);
-				double zstar = (z - fit.mu0) / fit.sigma0;
-
-				bool is_pos_hit = std::isfinite(fit.zstar_thresh_pos) && zstar >= fit.zstar_thresh_pos;
-				bool is_neg_hit = !is_pos_hit && std::isfinite(fit.zstar_thresh_neg) && zstar <= fit.zstar_thresh_neg;
-
-				if (!is_pos_hit && !is_neg_hit)
-					return;
-
-				double pvalue = is_pos_hit ? (1.0 - norm_cdf(zstar)) : norm_cdf(zstar);
-				double qvalue = qvalue_for_p(fit, is_pos_hit, pvalue);
-				double lfdr = local_fdr_for_z(fit, z);
-
+			auto emit = [&](int a, int b, float r, double z, double zstar, double pvalue, double qvalue, double lfdr) {
 				hfp << a << "\t" << chroms[a] << "\t" << pos[a] << "\t"
 					<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
 					<< r << "\t" << nsamples << "\t"
 					<< z << "\t" << zstar << "\t" << pvalue << "\t" << qvalue << "\t" << lfdr << "\n";
-
-				++kept_local;
-				if (is_pos_hit) ++hits_pos; else ++hits_neg;
-			});
+			};
+			for_each_pair([&](int a, int b, float r) { caller.add(a, b, r, emit); });
+			caller.finish(emit);
 		}
 
 		sfp << chr << "\t" << bin_lo << "\t" << bin_hi << "\t" << m_local << "\t"
 			<< (fit.ok && m_local >= opt.fdr_min_pairs ? "ok" : "skipped") << "\t"
 			<< fit.mu0 << "\t" << fit.sigma0 << "\t" << fit.lambda << "\t"
 			<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
-			<< hits_pos << "\t" << hits_neg << "\n";
+			<< caller.hits_pos << "\t" << caller.hits_neg << "\n";
 
 		tested_t[(size_t)tid] += m_local;
-		kept_t[(size_t)tid] += kept_local;
+		kept_t[(size_t)tid] += caller.hits_pos + caller.hits_neg;
 	}
 
 	for (int t = 0; t < nthreads; ++t) {
@@ -1126,9 +1106,6 @@ bool scan_markers_write_hits_fdr(
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
 	std::vector<long long> kept_t((size_t)nthreads, 0);
-	std::vector<std::mt19937_64> rngs((size_t)nthreads);
-	for (int t = 0; t < nthreads; ++t)
-		rngs[(size_t)t] = std::mt19937_64(seed + (uint64_t)t);
 
 	struct ThreadDistrib {
 		long long tested_pairs = 0;
@@ -1221,7 +1198,7 @@ bool scan_markers_write_hits_fdr(
 		long long m_local = 0;
 		std::vector<double> reservoir;
 		reservoir.reserve((size_t)rsample);
-		auto& rng = rngs[(size_t)tid];
+		auto rng = fdr_block_rng(seed, (uint64_t)j);
 
 		BlockDistrib pd;
 		if (do_distrib_pairs)
@@ -1263,42 +1240,25 @@ bool scan_markers_write_hits_fdr(
 		});
 
 		NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
+		FdrBlockCaller caller(fit, rsample);
 
-		long long kept_local = 0;
-		long long hits_pos = 0, hits_neg = 0;
-
-		// Pass 2: apply the fitted per-tail zstar thresholds and write hits.
+		// Pass 2: rank the block's most extreme pairs exactly and write hits.
 		if (fit.ok && m_local >= opt.fdr_min_pairs) {
-			for_each_pair([&](int a, int b, float r) {
-				float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
-				double z = std::atanh((double)rc);
-				double zstar = (z - fit.mu0) / fit.sigma0;
-
-				bool is_pos_hit = std::isfinite(fit.zstar_thresh_pos) && zstar >= fit.zstar_thresh_pos;
-				bool is_neg_hit = !is_pos_hit && std::isfinite(fit.zstar_thresh_neg) && zstar <= fit.zstar_thresh_neg;
-
-				if (!is_pos_hit && !is_neg_hit)
-					return;
-
-				double pvalue = is_pos_hit ? (1.0 - norm_cdf(zstar)) : norm_cdf(zstar);
-				double qvalue = qvalue_for_p(fit, is_pos_hit, pvalue);
-				double lfdr = local_fdr_for_z(fit, z);
-
+			auto emit = [&](int a, int b, float r, double z, double zstar, double pvalue, double qvalue, double lfdr) {
 				hfp << a << "\t" << chroms[a] << "\t" << pos[a] << "\t"
 					<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
 					<< r << "\t" << nsamples << "\t"
 					<< z << "\t" << zstar << "\t" << pvalue << "\t" << qvalue << "\t" << lfdr << "\n";
-
-				++kept_local;
-				if (is_pos_hit) ++hits_pos; else ++hits_neg;
-			});
+			};
+			for_each_pair([&](int a, int b, float r) { caller.add(a, b, r, emit); });
+			caller.finish(emit);
 		}
 
 		sfp << chr1 << "\t" << chr2 << "\t" << m_local << "\t"
 			<< (fit.ok && m_local >= opt.fdr_min_pairs ? "ok" : "skipped") << "\t"
 			<< fit.mu0 << "\t" << fit.sigma0 << "\t" << fit.lambda << "\t"
 			<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
-			<< hits_pos << "\t" << hits_neg << "\n";
+			<< caller.hits_pos << "\t" << caller.hits_neg << "\n";
 
 		if (do_distrib_pairs) {
 			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
@@ -1309,7 +1269,7 @@ bool scan_markers_write_hits_fdr(
 		}
 
 		tested_t[(size_t)tid] += m_local;
-		kept_t[(size_t)tid] += kept_local;
+		kept_t[(size_t)tid] += caller.hits_pos + caller.hits_neg;
 	}
 
 	for (int t = 0; t < nthreads; ++t) {
@@ -1544,9 +1504,6 @@ static bool scan_vector_fdr_core(
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
 	std::vector<long long> kept_t((size_t)nthreads, 0);
-	std::vector<std::mt19937_64> rngs((size_t)nthreads);
-	for (int t = 0; t < nthreads; ++t)
-		rngs[(size_t)t] = std::mt19937_64(seed + (uint64_t)t);
 
 	struct ThreadDistrib {
 		long long tested_pairs = 0;
@@ -1630,7 +1587,7 @@ static bool scan_vector_fdr_core(
 		// Pass 1 (calibration reservoir) + distrib sampling.
 		std::vector<double> reservoir;
 		reservoir.reserve((size_t)std::min<long long>(rsample, m_local));
-		auto& rng = rngs[(size_t)tid];
+		auto rng = fdr_block_rng(seed, (uint64_t)c);
 
 		BlockDistrib pd;
 		if (do_distrib_pairs)
@@ -1673,41 +1630,23 @@ static bool scan_vector_fdr_core(
 		}
 
 		NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
+		FdrBlockCaller caller(fit, rsample);
 
-		long long kept_local = 0;
-		long long hits_pos = 0, hits_neg = 0;
-
-		// Pass 2: apply the fitted per-tail zstar thresholds and write hits.
+		// Pass 2: rank the block's most extreme pairs exactly and write hits.
 		if (fit.ok && m_local >= opt.fdr_min_pairs) {
-			for (long long k = 0; k < m_local; ++k) {
-				const int b = bs[(size_t)k];
-				const float r = rs[(size_t)k];
-				const float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
-				const double z = std::atanh((double)rc);
-				const double zstar = (z - fit.mu0) / fit.sigma0;
-
-				bool is_pos_hit = std::isfinite(fit.zstar_thresh_pos) && zstar >= fit.zstar_thresh_pos;
-				bool is_neg_hit = !is_pos_hit && std::isfinite(fit.zstar_thresh_neg) && zstar <= fit.zstar_thresh_neg;
-
-				if (!is_pos_hit && !is_neg_hit)
-					continue;
-
-				double pvalue = is_pos_hit ? (1.0 - norm_cdf(zstar)) : norm_cdf(zstar);
-				double qvalue = qvalue_for_p(fit, is_pos_hit, pvalue);
-				double lfdr = local_fdr_for_z(fit, z);
-
+			auto emit = [&](int, int b, float r, double z, double zstar, double pvalue, double qvalue, double lfdr) {
 				write_row(hfp, b, r, z, zstar, pvalue, qvalue, lfdr);
-
-				++kept_local;
-				if (is_pos_hit) ++hits_pos; else ++hits_neg;
-			}
+			};
+			for (long long k = 0; k < m_local; ++k)
+				caller.add(0, bs[(size_t)k], rs[(size_t)k], emit);
+			caller.finish(emit);
 		}
 
 		sfp << chr << "\tNA\tNA\t" << m_local << "\t"
 			<< (fit.ok && m_local >= opt.fdr_min_pairs ? "ok" : "skipped") << "\t"
 			<< fit.mu0 << "\t" << fit.sigma0 << "\t" << fit.lambda << "\t"
 			<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
-			<< hits_pos << "\t" << hits_neg << "\n";
+			<< caller.hits_pos << "\t" << caller.hits_neg << "\n";
 
 		if (do_distrib_pairs) {
 			std::ofstream dpfp(distrib_pairs_part_paths[(size_t)tid], std::ios::out | std::ios::app);
@@ -1718,7 +1657,7 @@ static bool scan_vector_fdr_core(
 		}
 
 		tested_t[(size_t)tid] += m_local;
-		kept_t[(size_t)tid] += kept_local;
+		kept_t[(size_t)tid] += caller.hits_pos + caller.hits_neg;
 	}
 
 	for (int t = 0; t < nthreads; ++t) {
@@ -1971,9 +1910,6 @@ static bool scan_target_write_hits_fdr_intra(
 
 	std::vector<long long> tested_t((size_t)nthreads, 0);
 	std::vector<long long> kept_t((size_t)nthreads, 0);
-	std::vector<std::mt19937_64> rngs((size_t)nthreads);
-	for (int t = 0; t < nthreads; ++t)
-		rngs[(size_t)t] = std::mt19937_64(seed + (uint64_t)t);
 
 	struct ThreadDistrib {
 		long long tested_pairs = 0;
@@ -2051,7 +1987,7 @@ static bool scan_target_write_hits_fdr_intra(
 
 		std::vector<double> reservoir;
 		reservoir.reserve((size_t)std::min<long long>(rsample, m_local));
-		auto& rng = rngs[(size_t)tid];
+		auto rng = fdr_block_rng(seed, (uint64_t)bidx);
 
 		for (long long k = 0; k < m_local; ++k) {
 			const float r = rs[(size_t)k];
@@ -2084,46 +2020,28 @@ static bool scan_target_write_hits_fdr_intra(
 		}
 
 		NullFit fit = fit_empirical_null(reservoir, m_local, nsamples, opt.fdr_target, opt.fdr_lambda_cut);
-
-		long long kept_local = 0;
-		long long hits_pos = 0, hits_neg = 0;
+		FdrBlockCaller caller(fit, rsample);
 
 		if (fit.ok && m_local >= opt.fdr_min_pairs) {
-			for (long long k = 0; k < m_local; ++k) {
-				const int b = bs[(size_t)k];
-				const float r = rs[(size_t)k];
-				const float rc = std::min(std::max(r, -0.999999999f), 0.999999999f);
-				const double z = std::atanh((double)rc);
-				const double zstar = (z - fit.mu0) / fit.sigma0;
-
-				bool is_pos_hit = std::isfinite(fit.zstar_thresh_pos) && zstar >= fit.zstar_thresh_pos;
-				bool is_neg_hit = !is_pos_hit && std::isfinite(fit.zstar_thresh_neg) && zstar <= fit.zstar_thresh_neg;
-
-				if (!is_pos_hit && !is_neg_hit)
-					continue;
-
-				double pvalue = is_pos_hit ? (1.0 - norm_cdf(zstar)) : norm_cdf(zstar);
-				double qvalue = qvalue_for_p(fit, is_pos_hit, pvalue);
-				double lfdr = local_fdr_for_z(fit, z);
-
+			auto emit = [&](int, int b, float r, double z, double zstar, double pvalue, double qvalue, double lfdr) {
 				hfp << target_w << "\t" << tchr << "\t" << tpos << "\t"
 					<< b << "\t" << chroms[b] << "\t" << pos[b] << "\t"
 					<< r << "\t" << nsamples << "\t"
 					<< z << "\t" << zstar << "\t" << pvalue << "\t" << qvalue << "\t" << lfdr << "\n";
-
-				++kept_local;
-				if (is_pos_hit) ++hits_pos; else ++hits_neg;
-			}
+			};
+			for (long long k = 0; k < m_local; ++k)
+				caller.add(0, bs[(size_t)k], rs[(size_t)k], emit);
+			caller.finish(emit);
 		}
 
 		sfp << tchr << "\t" << bin_lo << "\t" << bin_hi << "\t" << m_local << "\t"
 			<< (fit.ok && m_local >= opt.fdr_min_pairs ? "ok" : "skipped") << "\t"
 			<< fit.mu0 << "\t" << fit.sigma0 << "\t" << fit.lambda << "\t"
 			<< fit.pi0_pos << "\t" << fit.pi0_neg << "\t"
-			<< hits_pos << "\t" << hits_neg << "\n";
+			<< caller.hits_pos << "\t" << caller.hits_neg << "\n";
 
 		tested_t[(size_t)tid] += m_local;
-		kept_t[(size_t)tid] += kept_local;
+		kept_t[(size_t)tid] += caller.hits_pos + caller.hits_neg;
 	}
 
 	for (int t = 0; t < nthreads; ++t) {
