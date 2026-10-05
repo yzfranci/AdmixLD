@@ -159,6 +159,16 @@ scaffold-mi7    100000    200000
 scaffold-mi8    50000     150000
 ```
 
+### BED Windows (`--bed-within`)
+
+Same format as `--bed`, but each row is treated as its own scan window: marker pairs are only formed within a row, never between rows (see [`--bed-within`](#filtering)). Rows are used exactly as given, not sorted or merged, so adjacent and overlapping windows stay separate.
+
+```
+scaffold-mi7    0          1000000
+scaffold-mi7    1000000    2000000
+scaffold-mi7    1500000    2500000
+```
+
 ### Parental Allele Frequency File (`--ref-freq`)
 
 A tab-separated file providing the allele frequency of the ancestry-1 allele (`p1`) and the ancestry-2 allele (`p2`) in the two parental populations, one row per marker. A header row is auto-detected.
@@ -365,9 +375,18 @@ LOCO (leave-one-chromosome-out) can be used to compute HI without the focus chro
 | `--chr STR` | all | Keep only this chromosome (repeatable) |
 | `--no-chr STR` | none | Exclude this chromosome (repeatable) |
 | `--bed FILE` | none | Keep only markers within BED intervals |
+| `--bed-within FILE` | none | Scan intrachromosomal pairs within each BED row only, never between rows (implies `--intra`; see below) |
 | `--min-callrate FLOAT` | 1.0 | Minimum call-rate to retain a marker; enables mean imputation if < 1.0 |
 | `--thin INT` | off | `--vcf` only: keep scanned markers at least INT bp apart (see below) |
 | `--keep-indv FILE` | all | Keep only samples listed in FILE (one ID per line) for the correlation scan; residualization uses the full set |
+
+**`--bed-within FILE`** restricts the intrachromosomal scan to pairs whose two markers lie in the same BED row; each row is scanned as its own block in place of the whole chromosome. Positions are matched against closed intervals `[start, end]`, as with `--bed`, so a marker on a shared boundary of two adjacent rows belongs to both.
+
+- Implies `--intra`. `--max-dist`/`--min-dist`, `--phased`, `--hi-mode excl-focus`, `--keep-indv`, `--ref-freq`, `--thin`, `--distrib`/`--distrib-raw`, and the other filters (including `--bed`) all apply as usual.
+- Markers outside every row are dropped from the scan, but HI and the LOCO components are still computed from the full marker set. Under `--hi-mode excl-focus` the HI for a window leaves out the window's whole chromosome, not just the window.
+- Overlapping rows are allowed. A pair that falls in several rows is tested and reported once per row, so it appears more than once in `<prefix>.hits.tsv` and is counted more than once in `tested_pairs` and `--distrib`. Exact duplicate rows are scanned once. The hits file has no column naming the window.
+- Rows with fewer than 2 markers after filtering are skipped (a count is printed).
+- Not supported with `--fdr`, `--target-chr`/`--target-pos`, `--sample-haplo`, or `--heatmap` (error).
 
 Be sure to use --min-callrate for loci that still have a decent amount of data (<10% missing), as it can introduce bias due to mean imputation.
 
@@ -500,7 +519,8 @@ Pearson correlations are computed between all pairs of residualized, standardise
 $$r_{AB} = \frac{1}{n-1} \sum_i Z_{Ai} \cdot Z_{Bi}$$
 
 **Interchromosomal** (default): all pairs from different chromosomes.  
-**Intrachromosomal** (`--intra`): all pairs from the same chromosome, optionally bounded to `--min-dist`–`--max-dist` bp.
+**Intrachromosomal** (`--intra`): all pairs from the same chromosome, optionally bounded to `--min-dist`–`--max-dist` bp.  
+**Within BED windows** (`--bed-within`): all pairs from the same BED row, with the same optional distance bounds.
 
 Matrix multiplication is tiled (default tile size 1024) for cache efficiency with large marker sets.
 

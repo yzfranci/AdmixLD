@@ -333,7 +333,7 @@ static bool scan_markers_write_hits_excl_focus_T(
 		if (m < 2)
 			return;
 
-		Eigen::VectorXf h = hi_excluding(hc_full, chr, std::string(""));
+		Eigen::VectorXf h = hi_excluding(hc_full, chroms_scan[idx[0]], std::string(""));
 
 		int n_valid = 0;
 		Eigen::MatrixXf Zc = residualize_and_zscore_subset(X_scan, h, idx, n_valid, freqs_scan);

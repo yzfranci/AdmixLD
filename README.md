@@ -116,6 +116,7 @@ Optional inputs:
 - **`--cov FILE`**: External HI file (TSV: `sample<TAB>hi`, single column) — used instead of the internally computed HI for residualization.
 - **`--ref-freq FILE`**: Parental allele frequency file (TSV: `chrom`, `pos`, `p1`, `p2`). When supplied with `--vcf`, enables frequency-based HI estimation and allele polarization (see [Frequency-Based HI](#frequency-based-hi-computation---ref-freq)).
 - **`--bed FILE`**: BED file of genomic intervals; only markers within these regions are retained.
+- **`--bed-within FILE`**: BED file of windows; LD is computed between markers within each window (each row) only, never between windows. Implies `--intra`; overlapping windows are allowed.
 - **`--sample-haplo FILE`**: Per-sample mitochondrial haplotype TSV (values must be `0` or `1`); correlates the haplotype against all ancestry markers instead of running a pairwise scan.
 
 Hybrid index weighting defaults to **unweighted** for `--vcf` input and **weighted** for `--msp` input; override either way with `--unweighted-hi`/`--weighted-hi`.

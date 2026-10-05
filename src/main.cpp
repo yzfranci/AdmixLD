@@ -69,6 +69,8 @@ static void usage() {
 		<< "  --chr STR              Keep only this chromosome (repeatable)\n"
 		<< "  --no-chr STR           Exclude this chromosome (repeatable; opposite of --chr)\n"
 		<< "  --bed FILE             Keep markers whose position is within BED intervals (chr start end; no header)\n"
+		<< "  --bed-within FILE      Intrachromosomal LD within each BED row only, never between rows (implies --intra;\n"
+		<< "                         overlapping rows allowed; not supported with --fdr/--target-*/--sample-haplo/--heatmap)\n"
 		<< "  --target-chr STR       Scan one target marker/pos vs all others (target chromosome)\n"
 		<< "  --target-pos INT       Scan one target marker/pos vs all others (target position; matches single position)\n"
 		<< "  --ref-freq FILE        Parental allele frequency file (TSV: chrom pos p1 p2); VCF only\n"
@@ -99,6 +101,7 @@ struct CliOptions {
 	std::vector<std::string> drop_chrs;
 
 	std::string bed_path;
+	std::string bed_within_path;
 
 	bool has_target = false;
 	std::string target_chr;
@@ -250,6 +253,10 @@ static bool parse_args(int argc, char** argv, CliOptions& opt) {
 
 		} else if (a == "--bed" && i + 1 < argc) {
 			opt.bed_path = argv[++i];
+
+		} else if (a == "--bed-within" && i + 1 < argc) {
+			opt.bed_within_path = argv[++i];
+			opt.intra = true;
 
 		} else if (a == "--target-chr" && i + 1 < argc) {
 			opt.has_target = true;
@@ -435,6 +442,25 @@ static int validate_options(const CliOptions& opt) {
 			std::cerr << "Warning: --min-dist is ignored without --intra\n";
 	}
 
+	if (!opt.bed_within_path.empty()) {
+		if (opt.has_fdr) {
+			std::cerr << "Error: --bed-within is not supported with --fdr\n";
+			return 2;
+		}
+		if (opt.has_target) {
+			std::cerr << "Error: --bed-within is not supported with --target-chr/--target-pos\n";
+			return 2;
+		}
+		if (!opt.sample_haplo_path.empty()) {
+			std::cerr << "Error: --bed-within is not supported with --sample-haplo\n";
+			return 2;
+		}
+		if (opt.heatmap) {
+			std::cerr << "Error: --bed-within is not supported with --heatmap\n";
+			return 2;
+		}
+	}
+
 	if (opt.intra && opt.distrib_chr_pairs && !opt.has_target) {
 		std::cerr << "Warning: --distrib-chr-pairs has no chromosome-pair blocks to report under --intra "
 		             "(non-target scans skip the interchromosomal pass entirely); no per-chromosome-pair "
@@ -577,6 +603,11 @@ static bool apply_marker_filters(
 	if (!read_bed_if_needed(opt, bed_by_chr, use_bed))
 		return false;
 
+	std::unordered_map<std::string, std::vector<BedInterval>> bed_within_by_chr;
+	const bool use_bed_within = !opt.bed_within_path.empty();
+	if (use_bed_within && !read_bed(opt.bed_within_path, bed_within_by_chr))
+		return false;
+
 	std::vector<int> keep_idx;
 	keep_idx.reserve((size_t)nwin);
 
@@ -596,6 +627,11 @@ static bool apply_marker_filters(
 
 		if (use_bed) {
 			if (!bed_contains(bed_by_chr, chr, p))
+				continue;
+		}
+
+		if (use_bed_within) {
+			if (!bed_contains(bed_within_by_chr, chr, p))
 				continue;
 		}
 
@@ -897,6 +933,67 @@ static void build_markers_by_chr_sorted(
 			[&](int a, int b) { return pos[a] < pos[b]; }
 		);
 	}
+}
+
+// One block per BED row, keyed chr:start-end; markers sorted by position.
+// Overlapping rows share markers; exact duplicate rows are dropped.
+static bool build_markers_by_bed_row(
+	const std::string& bed_path,
+	const std::vector<int>& pos,
+	const std::unordered_map<std::string, std::vector<int>>& markers_by_chr,
+	std::unordered_map<std::string, std::vector<int>>& markers_by_window,
+	std::vector<std::string>& window_order
+) {
+	std::vector<BedRow> rows;
+	if (!read_bed_rows(bed_path, rows))
+		return false;
+
+	markers_by_window.clear();
+	window_order.clear();
+
+	int n_dup = 0;
+	int n_small = 0;
+	for (const auto& r : rows) {
+		const std::string key = r.chr + ":" + std::to_string(r.start) + "-" + std::to_string(r.end);
+		if (markers_by_window.count(key)) {
+			++n_dup;
+			continue;
+		}
+
+		auto it = markers_by_chr.find(r.chr);
+		if (it == markers_by_chr.end()) {
+			++n_small;
+			continue;
+		}
+
+		const auto& idx = it->second;
+		auto lo = std::lower_bound(idx.begin(), idx.end(), r.start,
+			[&](int w, int value) { return pos[w] < value; });
+		auto hi = std::upper_bound(lo, idx.end(), r.end,
+			[&](int value, int w) { return value < pos[w]; });
+
+		if (std::distance(lo, hi) < 2) {
+			++n_small;
+			continue;
+		}
+
+		markers_by_window[key] = std::vector<int>(lo, hi);
+		window_order.push_back(key);
+	}
+
+	std::cout << "Using --bed-within windows: " << bed_path << "\n";
+	std::cout << "  rows             = " << rows.size() << "\n";
+	std::cout << "  scanned windows  = " << window_order.size() << "\n";
+	if (n_small > 0)
+		std::cout << "  skipped (<2 markers) = " << n_small << "\n";
+	if (n_dup > 0)
+		std::cout << "  skipped (duplicate rows) = " << n_dup << "\n";
+
+	if (window_order.empty()) {
+		std::cerr << "Error: no --bed-within window contains at least 2 markers\n";
+		return false;
+	}
+	return true;
 }
 
 static bool compute_hi(
@@ -1322,6 +1419,16 @@ int main(int argc, char** argv) {
 	build_markers_by_chr_sorted(chroms, pos, markers_by_chr, chr_order);
 	std::cout << "Chromosomes in loaded markers: " << chr_order.size() << "\n";
 
+	// Stage 4a: --bed-within replaces chromosome blocks with one block per BED row
+	if (!cli.bed_within_path.empty()) {
+		std::unordered_map<std::string, std::vector<int>> markers_by_window;
+		std::vector<std::string> window_order;
+		if (!build_markers_by_bed_row(cli.bed_within_path, pos, markers_by_chr, markers_by_window, window_order))
+			return 1;
+		markers_by_chr.swap(markers_by_window);
+		chr_order.swap(window_order);
+	}
+
 	// Stage 4b: Match and polarize freqs for full marker set (for HI + LOCO)
 	std::vector<MarkerFreq> freqs_full;
 	if (use_ref_freq) {
@@ -1659,7 +1766,10 @@ int main(int argc, char** argv) {
 	long long kept = 0;
 	std::string fdr_summary_path;
 
-	std::cout << "Scan mode: " << (cli.intra ? "intrachromosomal" : "interchromosomal") << "\n";
+	if (!cli.bed_within_path.empty())
+		std::cout << "Scan mode: intrachromosomal within --bed-within windows\n";
+	else
+		std::cout << "Scan mode: " << (cli.intra ? "intrachromosomal" : "interchromosomal") << "\n";
 	std::cout << "Tile size: " << cli.tile_size << "\n";
 
 	if (cli.has_fdr) {

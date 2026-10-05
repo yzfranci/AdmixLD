@@ -97,4 +97,33 @@ bool bed_contains(
 	return false;
 }
 
+bool read_bed_rows(
+	const std::string& path,
+	std::vector<BedRow>& rows
+) {
+	std::ifstream in(path);
+	if (!in) {
+		std::cerr << "Error: cannot open BED file: " << path << "\n";
+		return false;
+	}
 
+	rows.clear();
+
+	std::string line;
+	while (std::getline(in, line)) {
+		if (line.empty() || line[0] == '#')
+			continue;
+
+		std::istringstream ss(line);
+		BedRow r;
+		if (!(ss >> r.chr >> r.start >> r.end))
+			continue;
+
+		if (r.end < r.start)
+			continue;
+
+		rows.push_back(r);
+	}
+
+	return true;
+}
