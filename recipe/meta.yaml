@@ -6,7 +6,7 @@ package:
 
 source:
   url: https://github.com/yzfranci/AdmixLD/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: REPLACE_AFTER_TAGGING
+  sha256: 447a54b1ea841fea8b916de7be529dda9bea87085a2223284e7eb48e1bdca4ce
 
 build:
   number: 0
