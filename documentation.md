@@ -171,7 +171,7 @@ scaffold-mi7    1500000    2500000
 
 ### Parental Allele Frequency File (`--ref-freq`)
 
-A tab-separated file providing the allele frequency of the ancestry-1 allele (`p1`) and the ancestry-2 allele (`p2`) in the two parental populations, one row per marker. A header row is auto-detected.
+A tab-separated file giving, for each marker, the frequency of the VCF **ALT** allele (the allele counted by the GT or DS dosage) in parental population 1 (`p1`, HI = 1) and parental population 2 (`p2`, HI = 0), one row per marker. Both columns must refer to the same allele. A header row is auto-detected.
 
 ```
 chrom           pos       p1      p2
@@ -472,11 +472,15 @@ When `--ref-freq` is supplied together with `--vcf`, AdmixLD uses parental allel
 
 **Allele polarization**
 
-Before computing HI, each marker is polarized so that p1 ≥ p2 (i.e., so that the ancestry-1 allele is always the higher-frequency allele in parental population 1). For any marker where p2 > p1 in the input file, the dosage column is flipped:
+Before computing HI, each marker is polarized so that p1 ≥ p2, i.e. so that the counted allele is always the one more frequent in parental population 1. For any marker where p2 > p1 in the input file, the dosage column is flipped so that it counts the other (REF) allele:
 
 $$d'_{ij} = d_{\max} - d_{ij}$$
 
-and p1 and p2 are swapped, where $d_{\max}$ is 2 for diploid and 1 for phased haplotype data. This step ensures that δ = p1 − p2 > 0 for every retained marker.
+and the frequencies are replaced by those of that allele:
+
+$$p'_1 = 1 - p_1, \qquad p'_2 = 1 - p_2$$
+
+where $d_{\max}$ is 2 for diploid and 1 for phased haplotype data. This step ensures that δ = p1 − p2 ≥ 0 for every retained marker, while |δ| is unchanged.
 
 Markers absent from the `--ref-freq` file or with |δ| < `--min-delta-afd` are dropped before HI estimation (a count is printed to stdout).
 

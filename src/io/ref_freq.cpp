@@ -156,9 +156,10 @@ int polarize_X(
 		if (std::isnan(mf.p1) || std::isnan(mf.p2))
 			continue;
 		if (mf.p2 > mf.p1) {
-			// Flip: dosage=max_dos now encodes pop-1 ancestry
+			// Flip: dosage now counts the other allele, whose frequencies are the complements
 			X.col(w) = (max_dos - X.col(w).array()).matrix();
-			std::swap(mf.p1, mf.p2);
+			mf.p1 = 1.0f - mf.p1;
+			mf.p2 = 1.0f - mf.p2;
 			++n_flipped;
 		}
 	}

@@ -41,7 +41,7 @@ int apply_ref_freq_filter(
 );
 
 // Polarize X so dosage=2 (or 1 phased) always means pop-1 ancestry.
-// For markers where freqs[w].p2 > freqs[w].p1: flips X.col(w) and swaps p1/p2.
+// For markers where freqs[w].p2 > freqs[w].p1: flips X.col(w) and replaces p1/p2 with 1-p1/1-p2.
 // Returns count of flipped markers.
 int polarize_X(
 	Eigen::MatrixXf& X,
